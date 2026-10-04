@@ -9,6 +9,7 @@
  */
 
 import * as fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import * as path from "node:path";
 
 export type Phase = "planning" | "review" | "executing";
@@ -122,6 +123,18 @@ export function resolvePlanPath(cwd: string, goal: string): string {
 		if (n > 999) throw new Error("Could not allocate a unique plan path");
 	}
 	return candidate;
+}
+
+/**
+ * Markdown link to `target` with a file:// href, so Pi renders it as a clickable OSC 8
+ * hyperlink (`terminal.hyperlinks`) instead of a path the user has to copy. Label is
+ * relative to `cwd` for readability.
+ */
+export function planLink(cwd: string, target: string): string {
+	const label = path.relative(cwd, target) || target;
+	// ponytail: pathToFileURL leaves ")" unencoded, which would close the markdown
+	// destination; wrap the href in <> if a cwd containing parentheses ever shows up.
+	return `[${label.replace(/\\/g, "/")}](${pathToFileURL(target).href})`;
 }
 
 /** Count top-level plan documents (archive excluded) — used to report leftovers. */

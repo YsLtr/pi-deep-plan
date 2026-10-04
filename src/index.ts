@@ -18,6 +18,7 @@ import {
 	extractWriteTarget,
 	fromPersisted,
 	isWriteAllowed,
+	planLink,
 	resolvePlanPath,
 	resolveScratchDir,
 	stateEntryType,
@@ -176,7 +177,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 
 	// --------------------------------------------------- prompt injection
 
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (_event, ctx) => {
 		// Safety net: the pending flag must never outlive the batch that set it.
 		armPending = false;
 		if (!state.active) return;
@@ -190,7 +191,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"HARD GATE: 编辑器工具只能写方案文档,其余写入会被 harness 拦截;",
 						"bash/powershell 只允许只读命令。不要尝试绕过。",
 						"",
-						`方案文档: ${state.planPath ?? "(调用 deep_plan_start 分配)"}`,
+						`方案文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(调用 deep_plan_start 分配)"}`,
 						state.goal !== undefined ? `目标: ${state.goal}` : "",
 						"",
 						"纪律:",
@@ -216,6 +217,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"方案已提交。现在只做一件事:向用户呈现方案文档路径 + 可变决策表全文 + 任务清单," +
 						"给出三个选项(批准执行 / 修改可变决策 / 打回重做),然后停住等回话。\n" +
 						"**不要把方案正文贴进对话** —— 正文只存在于文档里,已写过一次就够了。\n" +
+						"方案文档一律写成 markdown 链接(形如 [docs/plans/x.md](file:///C:/repo/docs/plans/x.md)),纯路径或反引号在终端里点不开。\n" +
 						"不要开始实现,不要修改任何文件。",
 				},
 			};
@@ -548,7 +550,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					{
 						type: "text",
 						text: [
-							`方案已提交审查 (${s.planPath})`,
+							`方案已提交审查: ${planLink(ctx.cwd, s.planPath)}`,
 							"",
 							"可变决策表:",
 							"| # | 决策项 | 默认值 | 依据 | 改动代价 |",
@@ -560,6 +562,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 							"现在向用户呈现:上面的方案文档路径 + 上表 + 任务清单,给出三个选项",
 							"(批准执行 / 修改可变决策 / 打回重做),然后停住等回话。",
 							"不要把方案正文贴进对话 —— 正文只存在于文档里,用户自己打开看。",
+							"方案文档路径请把上面的 markdown 链接原样写进回复(可点击),不要改成反引号或纯路径。",
 						].join("\n"),
 					},
 				],
@@ -600,7 +603,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						type: "text",
 						text: [
 							"已批准,写保护解除,进入执行阶段。",
-							`方案: ${s.planPath}`,
+							`方案: ${planLink(ctx.cwd, s.planPath)}`,
 							params.approvalNote !== undefined ? `批准要点: ${params.approvalNote}` : "",
 							"按方案执行步骤推进,每步对照验收方式确认。",
 							"若新决策改变了已批准范围,调用 deep_plan_revise 重新走审查。",
@@ -639,7 +642,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						text: [
 							"已回到规划阶段,写保护重新生效。",
 							`原因: ${params.reason}`,
-							`方案文档仍为: ${s.planPath ?? "(未分配)"}`,
+							`方案文档仍为: ${s.planPath !== undefined ? planLink(ctx.cwd, s.planPath) : "(未分配)"}`,
 							"修订后用 deep_plan_review 重新提交审查。",
 						].join("\n"),
 					},

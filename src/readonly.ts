@@ -3,11 +3,10 @@
  *
  * Why this exists in this shape: the first version tested regexes against the raw
  * command string and split it on `|`, `&&`, `;` without understanding quoting. That
- * broke real recon commands —
+ * broke real recon commands, and refused a quoted `grep "rm -rf" src/` —
  *   grep -rn "a\|b" src/            → split inside the quoted pattern
  *   wc -l $(find src -type f | sort) → left a dangling `sort)` segment
  *   cd <dir> && rg x src/            → `cd` was not allowlisted
- * while still allowing `rtk rm -rf src` and rejecting `grep "rm -rf" src/`.
  *
  * Now the command is tokenized with `shell-quote` (quote/operator aware) and every
  * simple command's argv is checked against an allowlist, following the approach of
@@ -64,8 +63,6 @@ const READ_ONLY_BINARIES = new Set([
 	"md5sum", "sha1sum", "sha256sum", "cksum",
 	// vcs / package metadata (subcommand-checked in checkArgs)
 	"git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "node", "python", "python3", "py",
-	// rtk wraps another command; the wrapped one is validated
-	"rtk",
 	// changing directory is harmless
 	"cd",
 ]);
@@ -166,7 +163,6 @@ function checkArgv(argv: string[], depth: number): string | null {
 	const args = argv.slice(i + 1);
 
 	if (DENIED_BINARIES.has(bin)) return `被禁止的命令: ${bin}`;
-	if (bin === "rtk") return checkRtk(args, depth);
 	if (bin === "env") {
 		const rest = skipEnvOptions(args);
 		// bare `env` / `env -i` only prints the environment
@@ -217,33 +213,6 @@ function checkCommandBuiltin(args: string[], depth: number): string | null {
 	return checkArgv(rest, depth + 1);
 }
 
-const RTK_INFO_ARGS = new Set(["--version", "-V", "--help", "-h"]);
-
-/**
- * rtk subcommands that read on their own instead of proxying a program, so there
- * is no wrapped argv left to validate. Each one is a pure reader in `rtk --help`;
- * the state-changing ones (`run`, `init`, `trust`, `config`, `learn`, ...) and the
- * proxies (`git`, `npm`, `docker`, `test`, ...) deliberately stay out.
- */
-const RTK_NATIVE_READ_ONLY = new Set([
-	"gain", "hook-audit", "recall", "read", "smart", "json", "log", "deps",
-]);
-
-/**
- * rtk is a transparent proxy: `rtk grep ...` runs grep, `rtk rm -rf x` runs rm.
- * `proxy` and the runners (`test`, `err`, `summary`) take the program as their
- * first argument — `rtk test cargo test` runs cargo test, so validate the tail
- * rather than trusting the subcommand name.
- */
-function checkRtk(args: string[], depth: number): string | null {
-	const first = args[0];
-	if (first === undefined) return "rtk 缺少子命令";
-	if (RTK_INFO_ARGS.has(first) || RTK_NATIVE_READ_ONLY.has(first)) return null;
-	if (first === "proxy" || first === "test" || first === "err" || first === "summary") {
-		return checkWrapped(args.slice(1), depth);
-	}
-	return checkWrapped(args, depth);
-}
 
 // ------------------------------------------------- per-binary argument rules
 

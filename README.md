@@ -68,16 +68,12 @@ allowlist, following the approach of codex-cli's `is_known_safe_command`. It fai
 anything unparsed, unknown, or not provably read-only is refused.
 
 Allowed — file inspection, text processing, search, `git`/`npm`/`cargo`/`go` read-only
-subcommands, `cd`, `$(...)` bodies checked recursively, rtk-native readers (`rtk read`,
-`rtk recall`, `rtk ls`, …), and harmless redirections (`2>&1`, `2>/dev/null`).
+subcommands, `cd`, `$(...)` bodies checked recursively, `FOO=bar` env prefixes, and harmless
+redirections (`2>&1`, `2>/dev/null`, `>&-`).
 
 Refused — writers and process spawners (`rm`, `mv`, `cp`, `tee`, `sed -i`, `find -exec`,
 `sudo`, `bash -c`, `npm install`, `cargo build`), every real file redirection, background `&`,
 and sub-shell parentheses.
-
-It also covers the case where the [rtk](https://github.com/rtk-ai/rtk) extension has already rewritten
-`cat x` into `rtk read x` before the gate sees the command — the gate validates rtk's *wrapped*
-argv, so `rtk test cargo test` is still refused.
 
 The only write exceptions are the plan document itself and `.pi/tmp/` (subagent reports).
 

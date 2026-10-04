@@ -4,19 +4,16 @@ import test from "node:test";
 
 import { readOnlyVerdict } from "./readonly.ts";
 
-// The rtk extension rewrites `cat x` to `rtk read x` before this gate sees the
-// command, so rtk-native readers and harmless redirections must pass.
+// Harmless redirections and env-prefixed commands must pass; real writers must not.
 const ALLOWED = [
-	`cd /repo && rtk ls -la && echo "---" && rtk read package.json`,
-	"rtk ls -la docs/adr 2>&1 | head -60",
-	"rtk recall e831a674692e",
-	"rtk read todo && rtk read CONTEXT.md",
-	"rtk grep -rn todo src/",
-	"rtk git status",
+	`cd /repo && ls -la && echo "---" && cat package.json`,
+	"ls -la docs/adr 2>&1 | head -60",
+	"head -25 tests/diag/selectors.js && echo '=== pkg ===' && cat package.json",
+	"grep -rn todo src/",
+	"git status",
 	"du -sh docs legacy dist 2>/dev/null",
 	"du -sh dist 2>&1 >/dev/null",
-	`RTK_DISABLED=1 grep -rn "selectors" tests scripts package.json 2>/dev/null | head -10`,
-	"rtk read tests/diag/selectors.js --head-lines 25",
+	`FOO=1 grep -rn "selectors" tests scripts package.json 2>/dev/null | head -10`,
 	"cat x 2>&-",
 ];
 
@@ -27,14 +24,6 @@ const DENIED = [
 	"du -sh x >& /tmp/f",
 	"echo hi 2>&1 > out.txt",
 	"rm -rf src",
-	"rtk rm -rf src",
-	"rtk init -g",
-	"rtk config set a b",
-	"rtk run 'rm -rf src'",
-	"rtk test cargo test",
-	"rtk err cargo test",
-	"rtk summary cargo test",
-	"rtk read x && rtk rm -rf y",
 ];
 
 test("readers pass the planning gate", () => {

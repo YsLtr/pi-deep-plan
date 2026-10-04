@@ -15,6 +15,8 @@ const ALLOWED = [
 	"rtk git status",
 	"du -sh docs legacy dist 2>/dev/null",
 	"du -sh dist 2>&1 >/dev/null",
+	`RTK_DISABLED=1 grep -rn "selectors" tests scripts package.json 2>/dev/null | head -10`,
+	"rtk read tests/diag/selectors.js --head-lines 25",
 	"cat x 2>&-",
 ];
 

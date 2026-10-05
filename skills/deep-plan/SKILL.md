@@ -113,6 +113,12 @@ disable-model-invocation: true
 - 全部任务完成后调 `deep_plan_finish` 收尾。它会定稿方案状态(`status: done`;用户叫停时用
   `status: "abandoned"`)并**自动归档**到 `docs/plans/archive/<年>/`,使 `docs/plans/` 顶层只留活跃方案。
   文件不会被删除;确实要留在原地时传 `keepInPlace: true`。
+- **收尾顺序(硬要求)**:先 `deep_plan_finish`,**再**提交。归档本质是一次 `git mv`,必须发生在
+  `git add` 之前 —— 提交后再 finish,会凭空多出一个只含 rename 的 git 差异,落到下一个无关提交里
+  (本项目 4.16.0 就吃过这个亏)。判断标准:`git status --short` 提交后为空。
+- **与 handoff 合并为一步**:需要更新 `AGENTS.md` 并提交时,按 `~/.pi/agent/skills/handoff/SKILL.md`
+  走,但把 `deep_plan_finish` 放在 `git add` **之前** —— 最后一个任务 done → `deep_plan_finish`(定稿+归档)
+  → 更新 `AGENTS.md` → 一次提交同时带走代码、归档 rename 与交接。
 
 ## 方案文档生命周期
 

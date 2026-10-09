@@ -52,6 +52,12 @@ The extension picks the target document (from `--doc`, else the goal's slug), sc
 | 提交文档 | You commit `docs/` only. The extension does not run git. |
 | 执行 | `deep_plan_approve` freezes `docs/` and opens the repository; tasks are walked one at a time; `deep_plan_finish` finalizes the document. You commit code only. |
 
+**A document conflict stops the run.** If execution finds the document contradicts the code,
+itself, or a fact it needs, the model must not work around it: `deep_plan_revise conflict=true`
+halts the run, blocks the in-flight task, re-freezes the repository, and re-opens `docs/`. The
+reason is recorded and shown on the next run, and the halted task stays `blocked` until it is
+genuinely finished — so a doc fix can never read as completed work.
+
 Preferences the model cannot know are never silently assumed: each becomes a row in the
 variable-decisions table (3–8 rows, each with a default already in effect), which is the part
 you review.

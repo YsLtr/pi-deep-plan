@@ -76,6 +76,11 @@ export interface PlanState {
 	scratchAllow?: boolean;
 	startedAt?: number;
 	approvedAt?: number;
+	/**
+	 * Why the last execution run was stopped early, when a document conflict sent it back to
+	 * the documentation stage. Cleared by the next `deep_plan_approve`.
+	 */
+	haltReason?: string;
 }
 
 export const INACTIVE: PlanState = {
@@ -328,6 +333,7 @@ export function toPersisted(state: PlanState): PlanState {
 		scratchAllow: state.scratchAllow,
 		startedAt: state.startedAt,
 		approvedAt: state.approvedAt,
+		haltReason: state.haltReason,
 	};
 }
 
@@ -351,6 +357,7 @@ export function fromPersisted(data: unknown): PlanState | undefined {
 		scratchAllow: d.scratchAllow !== false,
 		startedAt: typeof d.startedAt === "number" ? d.startedAt : undefined,
 		approvedAt: typeof d.approvedAt === "number" ? d.approvedAt : undefined,
+		haltReason: typeof d.haltReason === "string" ? d.haltReason : undefined,
 	};
 }
 

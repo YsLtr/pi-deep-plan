@@ -227,6 +227,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						`本次文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(未指定)"}`,
 						`docs/ 现有文档(${countDocs(ctx.cwd)}): ${listDocs(ctx.cwd).slice(0, 20).join(", ") || "(空)"}`,
 						state.goal !== undefined ? `目标: ${state.goal}` : "",
+						state.haltReason !== undefined
+							? `\n**本次执行因文档冲突被中止**: ${state.haltReason}\n先把冲突解决掉再收尾。`
+							: "",
 						"",
 						"纪律:",
 						"1. 自问自答:建设计树,每个 frontier 问题自己给推荐答案,绝不问用户。",
@@ -266,8 +269,18 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					"",
 					"1. 按 deep_plan_task 定下的任务逐条推进,每条做完对照验收方式确认。",
 					"2. **提交只针对仓库代码。** 文档改动属于第一阶段的提交,不要混进代码提交里。",
-					"3. 文档若发现需要改,调 deep_plan_revise 回到文档阶段,改完重新审查。",
-					"4. 全部完成后调 deep_plan_finish 收尾。",
+					"3. 全部完成后调 deep_plan_finish 收尾。",
+					"",
+					"**发现文档冲突时(硬要求):停止执行,不要绕过。**",
+					"冲突包括:文档描述与实际代码不符、文档内部自相矛盾、文档漏掉了你正需要的事实、",
+					"或按文档做下去会与文档的其它部分打架。遇到任一种:",
+					"",
+					"- 立即停下当前任务,不要「照实际代码改」来迁就过时的文档,也不要把冲突记进代码注释。",
+					"- 调 `deep_plan_revise conflict=true reason=<具体冲突>`,它会把进行中的任务标为受阻、",
+					"  冻结仓库、放开 docs/。",
+					"- 在文档阶段把文档改对,`deep_plan_review` 重新收尾,等用户批准后再继续执行。",
+					"  受阻的任务修完后用 `deep_plan_step action=unblock` 恢复,不要当成已完成。",
+					"- 只是文档措辞小瑕疵、不影响执行正确性 → 不值得中止,记下来等收尾时一并处理。",
 				]
 					.filter((l) => l !== "")
 					.join("\n"),
@@ -608,6 +621,8 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			}
 			if (bodyOf(body) === "") throw new Error("文档正文为空,拒绝批准");
 			s.approvedAt = Date.now();
+			// The conflict that halted the last run is settled by approving the fixed document.
+			s.haltReason = undefined;
 			await stampDoc(s.planPath, { status: "approved", approved: isoDate() });
 			setPhase("executing", ctx);
 			return {
@@ -636,10 +651,16 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		name: "deep_plan_revise",
 		label: "Revise Plan",
 		description:
-			"回到第一阶段(文档)并重新冻结仓库:用户要求改文档、或执行中发现文档需要修正时调用。改完用 deep_plan_review 重新收尾。",
-		promptSnippet: "Re-open the documentation stage (docs writable, repo frozen)",
+			"停止本次执行并回到第一阶段(文档):执行中发现文档与实际冲突、过时或自相矛盾时调用。" +
+			"会把进行中的任务标为受阻,冻结仓库,放开 docs/。改完用 deep_plan_review 重新收尾。",
+		promptSnippet: "Halt execution on a document conflict and re-open the documentation stage",
 		parameters: Type.Object({
-			reason: Type.String({ description: "为什么要回到文档阶段" }),
+			reason: Type.String({ description: "为什么回到文档阶段(冲突/过时/矛盾的具体内容)" }),
+			conflict: Type.Optional(
+				Type.Boolean({
+					description: "true 表示因为文档冲突而中止本次执行(会记录中止原因并标记进行中的任务)。默认 false。",
+				}),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const s = requireActive();
@@ -649,6 +670,18 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					details: undefined,
 				};
 			}
+
+			// Halt first: an in-flight task must not stay "active" while its premise is being
+			// rewritten, or the doc fix silently reads as completed work.
+			const interrupted: string[] = [];
+			for (const task of s.tasks) {
+				if (task.status !== "active") continue;
+				task.status = "blocked";
+				task.note = `文档冲突,执行已中止: ${params.reason}`;
+				interrupted.push(task.id);
+			}
+			if (params.conflict === true) s.haltReason = params.reason;
+
 			await stampDoc(s.planPath ?? "", { status: "writing", updated: isoDate() });
 			setPhase("writing", ctx);
 			return {
@@ -656,10 +689,17 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					{
 						type: "text",
 						text: [
-							"已回到第一阶段:文档。docs/ 可写,仓库其余部分被冻结。",
+							params.conflict === true
+								? "已**中止本次执行**,回到第一阶段:文档。"
+								: "已回到第一阶段:文档。",
 							`原因: ${params.reason}`,
-							`文档仍为: ${s.planPath !== undefined ? planLink(ctx.cwd, s.planPath) : "(未指定)"}`,
-							"改完用 deep_plan_review 重新收尾,再申请批准执行。",
+							`文档: ${s.planPath !== undefined ? planLink(ctx.cwd, s.planPath) : "(未指定)"}`,
+							interrupted.length > 0
+								? `已把进行中的任务标为受阻: ${interrupted.join(", ")}(修完文档后用 ` +
+									`deep_plan_step action=unblock 恢复,不要当作已完成)`
+								: "没有进行中的任务。",
+							"现在 docs/ 可写、仓库被冻结。改完用 deep_plan_review 重新收尾,再申请批准执行。",
+							"不要在执行阶段直接改仓库去迁就过时的文档 —— 先把文档改对。",
 						].join("\n"),
 					},
 				],

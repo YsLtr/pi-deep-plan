@@ -9,39 +9,35 @@ Pi 扩展:两阶段的自主规划闭环 —— 第一阶段只写 `docs/`,第�
 
 ### 上次完成的工作
 
-1. 把写作语体标准写成规范条款,并同步到四份表达:`docs/INDEX.md` §3.1(权威)、
-   `docs/02-文档规范/04-写作语体.md`(契约)、`skills/deep-plan/SKILL.md`、
-   `skills/deep-plan/references/plan-format.md`。
-2. 修 `docs/` 的语体违规 78 处、失效的行号引用 8 处。
-3. 用独立子代理 `code-reviewer` 逐条核验文档断言与代码行为,发现 11 处不符,全部修正。
-4. 修掉其中 3 个产品缺陷 —— 门禁的静默放行路径:
+本次会话交付两项门禁设施,并借此把文档与代码的一致性重新走了一遍。
 
-   | 缺陷 | 修复 |
-   | --- | --- |
-   | 裸 `pi` 穿过门禁(`args.every` 对空数组恒为真,而裸 `pi` 正是启动交互式可写 agent 的形态) | 加 `args.length > 0` 前置条件 |
-   | 裸 `node` / `python` / `python3` / `py` 是开放 REPL | 加 `args.length === 0` 拒绝 |
-   | `topics` / `created` 是从未被写入或读取的死 frontmatter 字段 | 从 `DocFrontmatter` 与 `FIELD_ORDER` 删除 |
-
-   另修一处生命周期不对称:`session_shutdown` 原先只重置 `state`,现在连 `anchorPaths` 一并清空。
-   `src/readonly.test.ts` 新增 30 条断言,钉住上述行为与 git / npm 的两层白名单
-   (读形态放行:`git config -l`、`git remote -v`、`git stash list`、`npm ls`;写形态拒绝)。
-
-5. 新增第 12 条语体禁令「禁止正反杂糅」,并把「文档与代码的关系」「一致性核对」写进
-   `docs/INDEX.md` §6.1–§6.2。
-6. 交接规范内化为本扩展的 skill:`skills/handoff/SKILL.md`。
+1. **拦截记录与一次性放行**,分两个提交:`27481f2` 只含 `docs/`,`ebbf8ff` 含 `src/` + `README.md` + `skills/`。
+   - 拒绝写入 `.pi/deep-plan-blocked.log`(JSONL,被 `.gitignore` 覆盖)。写入先于阻断且不改变判定,写入失败只发一条 `warning`。
+   - 新工具 `deep_plan_request_allow command readOnly reason`。`readOnly` 必填且 fail closed:缺少或为假在触达 UI 之前返回。
+   - 凭据逐字比较(比较前去首尾空白)、绑定 `state.startedAt`、只存内存、`session_shutdown` 清除。
+   - 规格:`docs/01-写入门禁/05-拦截记录与临时放行.md`,含 §4 的 7 条已知限制。L1 是「实际只读」仅为模型自述,扩展无法验证。
+   - 实现:`src/intercept.ts`;断言:`src/intercept.test.ts`(30 条)。
+2. **修 4 个先前遗留的产品缺陷**:裸 `pi` 穿过门禁(空参数使 `args.every` 恒真)、裸 `node` / `python` / `python3` / `py` 是开放 REPL、`topics` / `created` 死 frontmatter 字段、`session_shutdown` 只重置 `state` 未清 `anchorPaths`。
+3. **两轮独立 `code-reviewer` 复核**,报出 24 处文档与代码不符,逐一核对后修正。其中 `docs/04-扩展接口/01` 有 5 处行号落在别的语句上,并与 `docs/00-总览/02`、`docs/03-规划流程/04` 对同一段代码的取值互相矛盾。
+4. **一处既有缺陷按用户裁决单独走文档提交**:`docs/05-测试与验收/01` §3 原称 `readonly.test.ts` 的两个数组有 9 条与 6 条,实为 21 条与 24 条,两个 test 在 `:61` / `:68`。§3.1 与 §3.2 的表已按源码注释的分组补全到全部条目。
+5. **文档里的 `src/*.ts:行号` 引用全部重新基准**:218 条完整引用与全部 `:NNN` 简写逐一按内容核对,无越界,无落在空行。
 
 ### 当前仓库状况
 
-工作树干净。设计文档 29 篇(6 个部分:22 章 + 6 篇部分索引 + `INDEX.md`),
-其中的 `src/*.ts:行号` 引用已按最近一次 `src/` 改动重新基准。
+工作树干净。设计文档 30 篇(6 个部分:23 章 + 6 篇部分索引 + `INDEX.md`)。`npm run typecheck` 无错;`npm test` 16 项,15 通过,1 项按平台跳过(见 `docs/05-测试与验收/01` §6 的 L4)。
 
 ### 未决问题
 
-`node script.js` 与 `python script.py` 仍被放行。脚本文件的行为不读取脚本本身无法静态判定,
-故保留为已知边界(见 `docs/01-写入门禁/02-只读命令门禁.md` §7 的 L4)。是否收紧待用户裁决。
+1. `docs/05-测试与验收/03` 的 R5 用「DENIED 第 3、4 条」指代 `du -sh x >& file` 与 `du -sh x >& /tmp/f`。该编号依赖 `docs/05-测试与验收/01` §3.2 两张表的连续计数,后续增删命令时须同步。
+2. `node script.js` 与 `python script.py` 仍被放行。脚本内容不读取脚本本身无法静态判定(`docs/01-写入门禁/02` §7 的 L4)。是否收紧待用户裁决。
 
 ### 后续任务
 
-用户未指定后续任务。
+用户指定:新增**文档复位**流程。
 
-2026-10-09 21:14 (+0800)
+- **用途**:代码修改之后,文档内容与代码之间产生的偏差的回归,即把文档复位到与当前代码一致。
+- **实现方式**:复用**文档提交流程**,即 `deep_plan_review` 的收尾呈现契约(`docs/03-规划流程/03` §6)与只提交 `docs/` 的提交边界(`docs/02-文档规范/03` §3、`docs/03-规划流程/03` §7)。
+- **须与执行中发现的文档错位区分**:`docs/03-规划流程/04` §4 的中止路径处理的是**执行开始之前就已存在**的文档错误 —— 已批准的方案不再能指导执行,故须中止并阻塞进行中的任务;文档复位处理的是**代码变更之后产生**的偏差。两者的触发时机、对进行中任务的影响、`haltReason` 的语义都因此不同。
+- 按本项目的两阶段约定,该流程须先写进 `docs/` 并取得批准,再改代码。
+
+2026-10-09 21:55 (+0800)

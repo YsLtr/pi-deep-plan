@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as path from "node:path";
 
-import { planLink } from "./state.ts";
+import { FILE_MUTATION_TOOLS, collectAnchors, INACTIVE, extractWriteTarget, isWriteAllowed, planLink } from "./state.ts";
+import type { PlanState } from "./state.ts";
 
 // A plan link must be a markdown link with a file:// href, otherwise Pi prints a plain path
 // and nothing is clickable in the terminal.
@@ -29,4 +30,94 @@ test("planLink keeps non-ascii hrefs percent-decoded", () => {
 	const link = planLink(cwd, path.join(cwd, "docs/plans/2026-10-05-修复-卡片丢失.md"));
 	assert.match(link, /\(file:\/\/\/.*2026-10-05-修复-卡片丢失\.md\)$/);
 	assert.ok(!link.includes("%"), link);
+});
+
+// Regression: `replace_match` / `copy` / `move` are real registered tools from
+// pi-hashline-edit-pro. Leaving them out let a planning-phase call through untouched.
+test("gate covers the whole anchored editor family", () => {
+	for (const name of ["edit", "write", "replace", "replace_match", "insert", "copy", "move", "undo_last_change"]) {
+		assert.ok(FILE_MUTATION_TOOLS.has(name), `${name} must be gated`);
+	}
+});
+
+// Regression: these tools resolve their file from the anchor registry and their `path`
+// field is optional/rejected, so the gate must ask the registry instead of returning
+// "unknown target" — that block is what a user hit on a `replace <plan-doc>` call.
+test("extractWriteTarget resolves anchored edits through the resolver", () => {
+	const plan = path.resolve("/repo/docs/plans/p.md");
+	const resolve = (anchor: string) => (anchor === "ryax" ? plan : undefined);
+
+	// Both anchors own the same file.
+	const ownBoth = (anchor: string) => (anchor === "zzzz" || anchor === "ryax" ? plan : undefined);
+	assert.equal(extractWriteTarget("replace", { remove_from: "ryax", remove_to: "zzzz", text: "x" }, ownBoth), plan);
+	assert.equal(extractWriteTarget("insert", { anchor: "ryax", direction: "after", text: "x" }, resolve), plan);
+	// Served rows carry `HASH│content`; only the anchor half is meaningful.
+	assert.equal(extractWriteTarget("replace", { remove_from: "ryax│some text", remove_to: "zzzz" }, ownBoth), plan);
+	// A partly-unresolvable or mixed set must not borrow the one anchor that resolved:
+	// the real target is unproven, so the gate has to fail closed.
+	assert.equal(extractWriteTarget("replace", { remove_from: "ryax", remove_to: "zzzz" }, resolve), "");
+	assert.equal(
+		extractWriteTarget(
+			"copy",
+			{ source_from: "ryax", source_to: "zzzz", insert_after: "aaaa" },
+			(a) => (a === "aaaa" ? path.resolve("/repo/other.md") : plan),
+		),
+		"",
+	);
+	// Explicit path wins: this is the self-owned tools' shape.
+	assert.equal(extractWriteTarget("write", { path: "/other/x.md" }), "/other/x.md");
+});
+
+test("extractWriteTarget reports unidentifiable and foreign calls distinctly", () => {
+	// A stale/unknown anchor must not be mistaken for an allowed target.
+	assert.equal(extractWriteTarget("replace", { remove_from: "ryax", remove_to: "zzzz" }, () => undefined), "");
+	assert.equal(extractWriteTarget("replace", { text: "x" }, () => undefined), "");
+	// No resolver (host without the anchor editor) must not crash or fail open.
+	assert.equal(extractWriteTarget("replace", { remove_from: "ryax" }), "");
+	// Foreign tools stay unknown so the gate leaves them alone.
+	assert.equal(extractWriteTarget("anchor_grep", { pattern: "x" }), undefined);
+});
+
+test("isWriteAllowed admits only the plan document and scratch", () => {
+	const cwd = path.resolve("/repo");
+	const state: PlanState = {
+		...INACTIVE,
+		active: true,
+		phase: "planning",
+		planPath: path.join(cwd, "docs/plans/p.md"),
+	};
+	assert.ok(isWriteAllowed(state, path.join(cwd, "docs/plans/p.md"), cwd));
+	assert.ok(isWriteAllowed(state, path.join(cwd, ".pi/tmp/report.md"), cwd));
+	assert.ok(!isWriteAllowed(state, path.join(cwd, "src/index.ts"), cwd));
+	assert.ok(!isWriteAllowed(state, path.join(cwd, "docs/plans/other.md"), cwd));
+	// Executing lifts the gate entirely.
+	assert.ok(isWriteAllowed({ ...state, phase: "executing" }, path.join(cwd, "src/index.ts"), cwd));
+});
+
+// The gate learns anchor->file from read output. If the row format drifts, every
+// anchored edit silently becomes "unknown target" again, so pin it here.
+test("collectAnchors reads served and diff rows, ignores prose", () => {
+	const SEP = "\u2502";
+	const map = new Map<string, string>();
+	const out = [
+		"some preamble",
+		`ryax${SEP}content here`,
+		`  abCD${SEP}indented row`,
+		`+EFgh${SEP}added`,
+		`-IJkl${SEP}removed`,
+		"line 12: 12 " + SEP + " not an anchor",
+		`ab1c${SEP}digits are not anchors`,
+		`abc${SEP}too short`,
+	].join("\n");
+	collectAnchors(out, "/repo/a.md", map);
+
+	assert.deepEqual(
+		[...map.entries()].sort(),
+		[
+			["EFgh", "/repo/a.md"],
+			["IJkl", "/repo/a.md"],
+			["abCD", "/repo/a.md"],
+			["ryax", "/repo/a.md"],
+		].sort(),
+	);
 });

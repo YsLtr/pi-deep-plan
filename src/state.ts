@@ -80,12 +80,23 @@ export const INACTIVE: PlanState = {
 	scratchAllow: true,
 };
 
-/** Edit-family tools that mutate the workspace. */
+/** Separator between an anchor and its row content in a served `HASH│content` row. */
+const HASH_SEP = "│";
+
+/**
+ * Tools that mutate the workspace through the file-anchor family.
+ *
+ * `replace_match` / `copy` / `move` come from pi-hashline-edit-pro and are registered
+ * names, not hypothetical: leaving them out made the gate pass them through untouched.
+ */
 export const FILE_MUTATION_TOOLS = new Set([
 	"edit",
 	"write",
 	"replace",
+	"replace_match",
 	"insert",
+	"copy",
+	"move",
 	"undo_last_change",
 ]);
 
@@ -183,31 +194,70 @@ export function isWriteAllowed(state: PlanState, target: string, cwd: string): b
 	return false;
 }
 
-/** Extract a filesystem path from a tool call's input, or undefined for pathless calls. */
-export function extractWriteTarget(toolName: string, input: Record<string, unknown>): string | undefined {
-	switch (toolName) {
-		case "write":
-			return typeof input.path === "string" ? input.path : undefined;
-		case "edit":
-		case "read":
-			return typeof input.file_path === "string"
-				? input.file_path
-				: typeof input.path === "string"
-					? input.path
-					: undefined;
-		case "replace":
-		case "insert":
-			return typeof input.file === "string"
-				? input.file
-				: typeof input.path === "string"
-					? input.path
-					: undefined;
-		case "undo_last_change":
-			return typeof input.path === "string" ? input.path : undefined;
-		default:
-			// Unknown editors cannot be preflighted.
-			return undefined;
+/**
+ * Fields that carry a resolver-owned file path instead of an anchor.
+ *
+ * The self-owned tools take an explicit `path`. The hashline editor family
+ * (`replace` / `replace_match` / `insert` / `copy` / `move`) resolves the file from
+ * the anchor registry, and its `path` field is *optional and rejected* unless
+ * require-path mode is on — so it must never be trusted as the target.
+ */
+const PATH_FIELDS = ["path", "file", "file_path"] as const;
+
+/** Anchor-ish fields, in the order each tool family prefers them. */
+const ANCHOR_FIELDS: Record<string, readonly string[]> = {
+	replace: ["remove_from", "remove_to"],
+	replace_match: ["replace_from", "replace_to"],
+	insert: ["anchor"],
+	copy: ["source_from", "source_to", "insert_after"],
+	move: ["source_from", "source_to", "insert_after"],
+};
+
+function firstString(input: Record<string, unknown>, fields: readonly string[]): string | undefined {
+	for (const field of fields) {
+		const value = input[field];
+		if (typeof value === "string" && value !== "") return value;
 	}
+	return undefined;
+}
+
+/**
+ * Extract the target path of a file-mutating tool call.
+ *
+ * Returns:
+ *   - the file path when the call carries one,
+ *   - `""` when the tool resolves its target from anchors (`resolveTarget` is required),
+ *   - `undefined` when the call is foreign or carries no usable identifier.
+ *
+ * `resolveTarget` is how a host that owns the anchor registry lets the gate see the
+ * path of an anchor-addressed edit. Without it those tools report `""` and the caller
+ * must decide whether to block or stay out of the way.
+ */
+export function extractWriteTarget(
+	toolName: string,
+	input: Record<string, unknown>,
+	resolveTarget?: (anchor: string) => string | undefined,
+): string | undefined {
+	const explicit = firstString(input, PATH_FIELDS);
+	if (explicit !== undefined) return explicit;
+
+	const anchors = ANCHOR_FIELDS[toolName];
+	if (anchors === undefined) return undefined; // foreign tool: no path field, no anchors
+	if (resolveTarget === undefined) return "";
+
+	// Every supplied anchor must resolve, and all to the same file. The editor itself
+	// refuses a mixed or stale set, so returning a partial match would let a call whose
+	// real target is unproven look like a write to the one file that did resolve.
+	const owners = new Set<string>();
+	for (const field of anchors) {
+		const anchor = firstString(input, [field]);
+		if (anchor === undefined) continue;
+		// Anchors arrive either bare or as a served `HASH│content` row.
+		const resolved = resolveTarget(anchor.split(HASH_SEP)[0]!.trim());
+		if (resolved === undefined || resolved === "") return "";
+		owners.add(path.resolve(resolved));
+	}
+	return owners.size === 1 ? [...owners][0]! : "";
 }
 
 const STATE_ENTRY_TYPE = "pi-deep-plan-state";
@@ -254,4 +304,21 @@ export function fromPersisted(data: unknown): PlanState | undefined {
 		startedAt: typeof d.startedAt === "number" ? d.startedAt : undefined,
 		approvedAt: typeof d.approvedAt === "number" ? d.approvedAt : undefined,
 	};
+}
+
+/** Served rows are `aBcD│content`; diff rows are `+aBcD│` / `-aBcD│`. */
+const SERVED_ROW_RE = /^\s*[+-]?([A-Za-z]{4})│/;
+
+/**
+ * Collect `anchor -> file` from a read result's text, so the gate can tell which file an
+ * anchor-addressed edit (`replace` / `insert` / ...) is about to write.
+ *
+ * Pi gives every package its own module root, so reaching into the anchor editor's
+ * registry is not possible; the served rows in the transcript are the available signal.
+ */
+export function collectAnchors(text: string, filePath: string, into: Map<string, string>): void {
+	for (const line of text.split("\n")) {
+		const match = SERVED_ROW_RE.exec(line);
+		if (match !== null) into.set(match[1]!, filePath);
+	}
 }

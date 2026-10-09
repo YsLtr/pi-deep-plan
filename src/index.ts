@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import {
 	FILE_MUTATION_TOOLS,
 	INACTIVE,
+	collectAnchors,
 	countTopLevelPlans,
 	extractWriteTarget,
 	fromPersisted,
@@ -43,14 +44,6 @@ const STATUS_KEY = "deep-plan";
 
 export default function deepPlan(pi: ExtensionAPI): void {
 	let state: PlanState = { ...INACTIVE };
-	/**
-	 * Set when a `deep_plan_start` call is observed *before* its execute() runs.
-	 * Pi evaluates the write gate for every tool in a batch before executing any of
-	 * them, so `deep_plan_start` + a write command in one message would otherwise let
-	 * the write through ungated (reproducible 3/3). Lives exactly one batch.
-	 */
-	let armPending = false;
-
 	// ---------------------------------------------------------------- helpers
 
 	function sync(ctx: ExtensionContext): void {
@@ -124,19 +117,45 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		state = { ...INACTIVE };
 	});
 
+
+	/**
+	 * Anchor -> owning file, so the gate can see the target of an anchor-addressed edit
+	 * (`replace` / `insert` / `replace_match` / `copy` / `move`).
+	 *
+	 * The map is learned from `read` results: every served row is `HASH│content`, and the
+	 * call's own input says which file those rows came from. Importing the anchor editor's
+	 * registry is not an option — Pi loads each package with its own module root, so one
+	 * package cannot reach another's dependency instance.
+	 *
+	 * Only anchors minted by a `read` in this session resolve. Anything else is unknown,
+	 * which is the honest answer, and a stale anchor fails inside the editor anyway.
+	 */
+	const anchorPaths = new Map<string, string>();
+
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== "read" || event.isError) return;
+		const requested = event.input.path ?? event.input.file_path ?? event.input.file;
+		if (typeof requested !== "string" || requested === "") return;
+		for (const part of event.content) {
+			if (part.type === "text") collectAnchors(part.text, requested, anchorPaths);
+		}
+	});
+
+	function planTargetFor(anchor: string): string | undefined {
+		return anchorPaths.get(anchor);
+	}
+
 	// --------------------------------------------------------------- the gate
 
-	pi.on("tool_call", async (event, ctx) => {
-		// Arm on sight of deep_plan_start so sibling calls in the same batch are gated.
-		if (event.toolName === "deep_plan_start") {
-			armPending = true;
-			return;
-		}
-		const gated = state.active ? state.phase !== "executing" : armPending;
-		if (!gated) return;
 
+	pi.on("tool_call", async (event, ctx) => {
+		// Only live state gates. `deep_plan_start` is no longer armed mid-batch: the
+		// command entry point sets state before any model run, so there is no window in
+		// which a sibling write could ride along behind the start call.
+		const gated = state.active && state.phase !== "executing";
+		if (!gated) return;
 		if (FILE_MUTATION_TOOLS.has(event.toolName)) {
-			const target = extractWriteTarget(event.toolName, event.input as Record<string, unknown>);
+			const target = extractWriteTarget(event.toolName, event.input as Record<string, unknown>, planTargetFor);
 			if (target === undefined) {
 				return {
 					block: true,
@@ -144,6 +163,19 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						`deep-plan 写保护:${event.toolName} 的目标路径无法确定,已阻止。` +
 						`\n当前只允许写方案文档: ${state.planPath ?? "(未分配)"}` +
 						`\n需要进入执行阶段请调用 deep_plan_approve。`,
+				};
+			}
+			if (target === "") {
+				// An anchored editor whose anchor this gate never saw served cannot be
+				// attributed to a file. Fails closed: passing it through would let a model
+				// edit any freshly-read file, since the served rows may not have matched.
+				return {
+					block: true,
+					reason:
+						`deep-plan 写保护:${event.toolName} 的锚点无法定位到文件,已阻止。` +
+						`\n当前只允许写方案文档: ${state.planPath ?? "(未分配)"}` +
+						`\n(先 read 目标文件让锚点可解析,或改用 write 整篇覆盖)` +
+						`\n批准执行请调用 deep_plan_approve。`,
 				};
 			}
 			if (!isWriteAllowed(state, target, ctx.cwd)) {
@@ -178,8 +210,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 	// --------------------------------------------------- prompt injection
 
 	pi.on("before_agent_start", async (_event, ctx) => {
-		// Safety net: the pending flag must never outlive the batch that set it.
-		armPending = false;
 		if (!state.active) return;
 		if (state.phase === "planning") {
 			return {
@@ -189,9 +219,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					content: [
 						"[DEEP PLAN ACTIVE — 规划阶段]",
 						"HARD GATE: 编辑器工具只能写方案文档,其余写入会被 harness 拦截;",
-						"bash/powershell 只允许只读命令。不要尝试绕过。",
+						"bash/powershell 只允许只读命令;`.pi/tmp/` 供子代理报告。不要尝试绕过。",
 						"",
-						`方案文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(调用 deep_plan_start 分配)"}`,
+						`方案文档(唯一可写文件): ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(调用 deep_plan_start 分配)"}`,
 						state.goal !== undefined ? `目标: ${state.goal}` : "",
 						"",
 						"纪律:",
@@ -201,6 +231,12 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"4. 用户可能有不同偏好的项,用 deep_plan_record_variable 记录(必须带已生效的默认值)。",
 						"5. 写方案文档 → deep_plan_review 提交审查。",
 						"6. 审查后停住,等批准。批准后 deep_plan_approve 解锁并执行。",
+						"",
+						"domain-modeling 的产物在规划阶段**只能写进方案文档**,写仓库的 CONTEXT.md / docs/adr/ 会被门禁拦截:",
+						"- 术语与领域模型 → 方案文档的「术语与领域模型」一节(格式见 CONTEXT-FORMAT.md)",
+						"- 够得上 ADR 的硬决策 → 「决策记录」里带 ADR 语义的那条(格式见 ADR-FORMAT.md)",
+						"- 真正落盘到 CONTEXT.md / docs/adr/ 是 P5 执行阶段的任务,拆进任务清单",
+						"- 局部改写方案文档请用 write 整篇覆盖(带 path 的按行编辑才可判定)",
 					]
 						.filter((l) => l !== "")
 						.join("\n"),
@@ -252,7 +288,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				if (choice === "放弃并重新开始") {
 					state = { ...INACTIVE };
 				} else {
-					pi.sendUserMessage(`继续当前 deep-plan(${state.phase})。目标:${state.goal ?? goal}`);
+					pi.sendUserMessage(`继续当前 deep-plan(${state.phase})。`);
 					return;
 				}
 			}
@@ -278,17 +314,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						: ""),
 				"info",
 			);
-			pi.sendUserMessage(
-				[
-					`开始 deep-plan。目标:${goal}`,
-					"",
-					`方案文档(唯一可写文件): ${planPath}`,
-					`scratch 目录(子代理报告可写): ${resolveScratchDir(ctx.cwd)}`,
-					"",
-					"按 deep-plan 纪律执行 P1(自问自答)→ P2(派子代理查证)→ P3(写方案)→ P4(审查)。",
-					"全程不要问我任何问题,事实自己查,偏好自己定默认值并记入可变决策表。",
-				].join("\n"),
-			);
+			// One line only: state and every discipline live in the before_agent_start
+			// injection, so nothing here duplicates what the hook says.
+			pi.sendUserMessage(`开始 deep-plan 规划。目标:${goal}`);
 		},
 	});
 
@@ -393,8 +421,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				};
 			}
 			const planPath = resolvePlanPath(ctx.cwd, params.goal);
-			// Real state now owns the gate; the pending flag has done its job.
-			armPending = false;
+			// Real state now owns the gate for every later call.
 			state = {
 				active: true,
 				phase: "planning",

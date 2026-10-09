@@ -40,109 +40,19 @@ deep-plan 现在规定 `docs/` 下**一个话题一个文件**(`docs/<slug>.md`)
 
 ## 决策记录
 
-### D1. 布局单位为「话题文件夹」,不是「每次运行一个文件夹」
+一条决策一个文件,按编号即阅读顺序。
 
-- **结论**: `docs/<topic>/` 是一个话题(可长期维护的文档集);文件夹内一个文件一个条目。
-  `docs/INDEX.md` 仍是全局话题目录。
-- **依据**: `skills/deep-plan/references/plan-format.md:1-8` 规定文档是长期项目文档;
-  `src/state.ts:220-221` 注释 "documents are long-lived project docs, not per-run artifacts.
-  There is no date in the name and no archive — git holds the history.";
-  `src/state.ts:162-174` 的 `resolveDocPath` 按 goal 的 slug 命名,同一话题重规划落在同一出处 —— 语义是话题。
-- **置信度**: 高
-- **备选**: 「每次运行一个文件夹(`docs/<date>-<slug>/`)」被否决 —— 与「不写按日期排布的变化记录」
-  硬规矩直接冲突,且会让 `docs/` 变成历史垃圾场。「保持单文件、只允许子文件夹」被否决 ——
-  那等于没改,用户要的正是条目分划方式的改变。
-
-### D2. 术语留在总纲文件,决策与计划条目各自成文件
-
-- **结论**: 话题文件夹内固定三个能力位 —— 总纲一个文件(概览 / 目标与非目标 / 术语 / 风险 / 开放问题)、
-  决策每个一个文件、计划条目每个一个文件。
-- **依据**: `domain-modeling/CONTEXT-FORMAT.md:5-19` 的术语是「一个命名 section 下的 term 列表」,
-  天然是文件内结构,拆开会让「成对 `_Avoid_`」失去可读性;`domain-modeling/ADR-FORMAT.md:1-3`
-  已规定 "ADRs live in `docs/adr/` and use sequential numbering: `0001-slug.md`" —— 决策本就是文件夹 + 一文件一决策。
-- **置信度**: 高
-- **备选**: 「术语也各一个文件」被否决(违背 CONTEXT-FORMAT 的列表语义);
-  「决策留在总纲的决策记录小节、只把计划条目拆文件」被否决(没解决诉求,该诉求主要针对可数的决策与计划条目)。
-
-### D3. 总纲文件保持 planPath 语义,条目路径由纯函数推导
-
-- **结论**: 保留 `planPath` 指向话题文件夹内的总纲(`docs/<topic>/<topic>.md`),不新增 state 字段;
-  新增 `planDir()` 与 `entryPath()` 两个纯函数做路径推导。
-- **依据**: `src/state.ts:162-174` `resolveDocPath` 是唯一路径真相源,只需改其产出;
-  `src/state.ts:182-207` `listDocs` 已是递归 walk(带 `isDirectory` 分支),文件夹布局天然被支持。
-- **置信度**: 高
-- **备选**: 「新增一整套文件夹工具」被否决(工具面翻倍);「不改 state、让模型自己建文件夹」被否决
-  (stampDoc / 门禁 / `--doc` 全按文件工作,总纲拿不到 frontmatter)。
-
-### D4. frontmatter 只属于总纲,条目文件保持纯正文
-
-- **结论**: 只有总纲带 frontmatter;`decisions/*` 与 `plan/*` 是纯正文,不 stamp。
-- **依据**: `src/archive.ts:9-10` 注释 "The extension owns only the small metadata header of a document";
-  `src/archive.ts:107-110` `stampDoc` 对缺失文件返回 `undefined` 而不创建 —— 若条目也要 stamp,
-  就得额外保证它们存在,不如不 stamp;`ADR-FORMAT.md:11` "An ADR can be a single paragraph."
-- **置信度**: 高
-- **备选**: 「条目文件也带 frontmatter」被否决(与 domain-modeling 产物打架,且 finish 要遍历全部条目);
-  「frontmatter 移到 INDEX.md」被否决(与「索引是话题清单」的定位冲突)。
-
-### D5. `--doc` 需要用「结尾斜杠 / 已存在目录」区分文件夹与单文件
-
-- **结论**: `--doc` 解析规则 —— 以 `/` 结尾、或指向已存在的目录 → 文件夹布局,总纲取 `<dir>/<dirname>.md`;
-  带 `.md` → 就是该文件;其余无扩展名 → 沿用现有 `+ ".md"`。
-- **依据**: 实测 `src/state.ts:168-171` 现有逻辑:`path.extname("docs/foo") === ""` 与
-  `path.extname("docs/foo/") === ""` **都成立**,两者都被改写成 `docs/foo.md`,无法区分意图。
-- **置信度**: 高
-- **备选**: 「有扩展名当文件、无扩展名当文件夹」被否决(会静默改变 `--doc docs/foo` 现有用法含义);
-  「不处理、文档里写明别这么传」被否决(能测出来的歧义不该留给用户记)。
-
-### D6. `docs/INDEX.md` 仍是单一全局话题索引,不切分为每话题索引
-
-- **结论**: 索引保持单一文件,每行从「文档」升级为「话题 + 入口链接」:`| 话题 | 入口 | 覆盖范围 |`。
-  `indexFile()` 实现与调用点不变。
-- **依据**: `INDEX_BASENAME` 仅经 `indexFile()`(`src/state.ts:152-154`)被 `/deep-plan-docs`
-  (`src/index.ts:382`)与阶段注入文案(`src/index.ts:246`)消费 —— 单点消费,提级只改措辞与渲染;
-  `README.md:76` 已把它描述为话题清单。
-- **置信度**: 高
-- **备选**: 「每话题一个 INDEX.md」被否决(让 `/deep-plan-docs` 退化为逐话题列索引,失去全局视图);
-  「去掉索引、靠 listDocs 现算」被否决(丢掉「哪个话题讲什么」的人类可读描述)。
-
-### D7. 补 `resolveDocPath` 直测,并清理测试里的旧布局硬编码
-
-- **结论**: 除布局改动外,补 `resolveDocPath` 直接单测(文件夹 / 单文件 / 带 `.md` / 已存在目录 /
-  越界拒绝五种输入),并把 `state.test.ts` 里 5 处 `docs/plans/**` 硬编码替换为当前布局。
-- **依据**: 侦察确认 `resolveDocPath`/`isDocPath`/`listDocs`/`countDocs` 在 `src/state.test.ts` 中
-  **没有任何直接用例**(`src/state.test.ts:6` 的 import 不含这些符号),`isDocPath` 仅经
-  `isWriteAllowed` 间接覆盖;同时 `src/state.test.ts:13,14,19,30,47` 硬编码了代码里已不存在的
-  `docs/plans/...`。
-- **置信度**: 高
-- **备选**: 「把 5 处旧路径批量改名了事」被否决 —— 断言会通过,但被改的正是路径推导,
-  没有直测等于改完不可验证。
-
-### D8. 提交归属是每次运行的偏好,不写死在文档与收尾契约里
-
-- **结论**: 文档只固定一条不变约束 —— **文档阶段的提交与执行阶段的提交必须分开**;
-  提交由谁执行按当次用户指令。本次用户明确指令「提交也由 agent 负责」,故执行阶段实现时,
-  `deep_plan_review` 的收尾呈现不再要求用户跑 git,`before_agent_start` 两阶段注入文案同步改为
-  「提交由你执行,先提文档再进执行阶段」。
-- **依据**: `src/index.ts:583-586` 现状收尾呈现硬编码「先只提交文档(示例 `git add docs/ && git commit`)
-  —— 这一步由用户执行」;`skills/deep-plan/references/plan-format.md` 收尾契约第 4 条同样写死
-  「由用户执行」「不要替用户跑 git」。用户本次指令与之直接冲突。
-- **置信度**: 中
-- **备选**: 「让 agent 提交但保留旧呈现文案」被否决 —— 文案与行为不一致,下次运行会读到互相矛盾的
-  指令,正是文档冲突的成因;「把这条委托留到以后实现」被否决 —— 明知不一致还留着,等于留 TBD。
-
-### D9. 建话题文件夹用 write 隐式建父目录,不放开 mkdir
-
-- **结论**: 文件夹靠写入文件隐式创建 —— 模型建话题文件夹的动作就是往
-  `docs/<topic>/<topic>.md` 里写第一个文件,`write` 自动建父目录。`bash mkdir` 继续被拒,
-  写作阶段的只读 shell 契约不动。写作阶段的注入文案要写明这条。
-- **依据**: `src/readonly.ts:40` 的 `DENIED_BINARIES` 显式含 `"mkdir"`,写作阶段 bash 门禁
-  直接拒绝该命令(实测 `mkdir -p docs/x && git mv ...` 被拦)。而写文件走的是
-  `src/state.ts:243-251` 的 `isWriteAllowed`(只看目标是否在 `docs/` 下),不经 shell 门禁;
-  实测 `write` 已在本仓库不存在的 `docs/deep-plan-layout/` 下成功落盘。
-- **置信度**: 高
-- **备选**: 「把 `mkdir` 加进只读放行名单」被否决 —— 它写文件系统,放行会破坏「写作阶段
-  bash 严格只读」这条契约,而那正是门禁存在的理由;「让模型用重定向等方式绕过」被否决 ——
-  门禁明确禁止绕过,且这正是它要拦的行为。
+| # | 决策 | 文件 |
+|---|------|------|
+| D1 | 布局单位为「话题文件夹」,不是「每次运行一个文件夹」 | [decisions/0001-topic-not-run-folder.md](./decisions/0001-topic-not-run-folder.md) |
+| D2 | 术语留在总纲文件,决策与计划条目各自成文件 | [decisions/0002-terms-stay-in-overview.md](./decisions/0002-terms-stay-in-overview.md) |
+| D3 | 总纲文件保持 planPath 语义,条目路径由纯函数推导 | [decisions/0003-planpath-overview-pure-fn-entry-path.md](./decisions/0003-planpath-overview-pure-fn-entry-path.md) |
+| D4 | frontmatter 只属于总纲,条目文件保持纯正文 | [decisions/0004-frontmatter-overview-only.md](./decisions/0004-frontmatter-overview-only.md) |
+| D5 | `--doc` 需要用「结尾斜杠 / 已存在目录」区分文件夹与单文件 | [decisions/0005-doc-flag-trailing-slash-directory.md](./decisions/0005-doc-flag-trailing-slash-directory.md) |
+| D6 | `docs/INDEX.md` 仍是单一全局话题索引,不切分为每话题索引 | [decisions/0006-single-global-index.md](./decisions/0006-single-global-index.md) |
+| D7 | 补 `resolveDocPath` 直测,并清理测试里的旧布局硬编码 | [decisions/0007-direct-tests-resolvedocpath.md](./decisions/0007-direct-tests-resolvedocpath.md) |
+| D8 | 提交归属是每次运行的偏好,不写死在文档与收尾契约里 | [decisions/0008-commit-ownership-per-run.md](./decisions/0008-commit-ownership-per-run.md) |
+| D9 | 建话题文件夹用 write 隐式建父目录,不放开 mkdir | [decisions/0009-write-creates-parent-not-mkdir.md](./decisions/0009-write-creates-parent-not-mkdir.md) |
 
 ## 术语与领域模型
 
@@ -180,25 +90,18 @@ _Avoid_: 目录 (catalog)、清单 (manifest)
 
 ## 计划
 
-1. `src/state.ts` 新增 `planDir()` 与 `entryPath(kind, slug, seq)` 纯函数 — 验收:
-   单测断言 `entryPath("decisions","x",3)` 产出 `docs/<topic>/decisions/0003-x.md`。
-2. `resolveDocPath` 支持文件夹布局与 D5 的三条 `--doc` 解析规则 — 验收:
-   D7 的五种输入单测全绿,且 `--doc docs/foo/` 与 `--doc docs/foo` 产出不同结果。
-3. `deep_plan_review` 对话题文件夹内条目文件做非空校验(V3)— 验收:
-   放一个空的 `plan/0001-x.md` 会让 review 退回并指名该文件;删掉后通过。
-4. `/deep-plan-docs` 与两阶段注入文案反映话题布局(D6)— 验收:
-   命令输出里话题以入口文件形式呈现;注入文案不再说「在 docs/ 下新建」而说「在话题文件夹内新建条目」。
-5. 清理 `state.test.ts` 旧布局硬编码,补 `resolveDocPath` 直测(D7)— 验收:
-   全仓 `rg "docs/plans"` 无命中;`npm test` 与 `npm run typecheck` 全绿。
-6. 同步文档:`plan-format.md` 骨架加入话题文件夹布局与条目文件约定;`SKILL.md` 的分划与
-   通配行对齐新布局;`README.md` 布局段更新 — 验收:
-   三份文档里对布局的描述与代码实际产出一致。
-7. 提交归属改为按当次指令(D8/V4)— 改 `src/index.ts:583-586` 收尾呈现与
-   `before_agent_start` 两阶段注入文案,去掉「这一步由用户执行」的写死说法,改为「提交由你执行,
-   先提文档再进执行阶段」;`plan-format.md` 收尾契约第 4 条同步。验收:
-   收尾呈现里不再出现「由用户执行」;两段提交分离的约束仍在(文档 commit 与代码 commit 不混)。
-8. 写作阶段注入文案点明「建文件夹用 write 写第一个文件,不要用 mkdir」(D9)— 验收:
-   文案里出现该指引;`bash mkdir` 仍被写作阶段门禁拒绝(不变)。
+一个计划条目一个文件,按编号即执行顺序。执行状态由 `deep_plan_task` 管理,不写在这里。
+
+| # | 条目 | 文件 |
+|---|------|------|
+| 1 | state.ts 新增 planDir/entryPath 纯函数 | [plan/0001-state-plandir-entrypath.md](./plan/0001-state-plandir-entrypath.md) |
+| 2 | resolveDocPath 支持文件夹布局与 --doc 三条解析规则 | [plan/0002-resolvedocpath-folder-layout.md](./plan/0002-resolvedocpath-folder-layout.md) |
+| 3 | deep_plan_review 校验条目文件非空 | [plan/0003-review-entry-non-empty.md](./plan/0003-review-entry-non-empty.md) |
+| 4 | /deep-plan-docs 与两阶段注入文案反映话题布局 | [plan/0004-docs-command-and-phase-injection.md](./plan/0004-docs-command-and-phase-injection.md) |
+| 5 | 清理 state.test.ts 旧布局硬编码并补 resolveDocPath 直测 | [plan/0005-clean-test-hardcoded-paths.md](./plan/0005-clean-test-hardcoded-paths.md) |
+| 6 | 同步文档:plan-format.md / SKILL.md / README.md 对齐新布局 | [plan/0006-sync-docs-plan-format-skill-readme.md](./plan/0006-sync-docs-plan-format-skill-readme.md) |
+| 7 | 提交归属改为按当次指令 | [plan/0007-commit-ownership-per-run.md](./plan/0007-commit-ownership-per-run.md) |
+| 8 | 写作阶段注入文案点明用 write 建文件夹 | [plan/0008-writing-phase-folder-guidance.md](./plan/0008-writing-phase-folder-guidance.md) |
 
 ## 风险与回滚
 

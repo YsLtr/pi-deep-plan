@@ -26,10 +26,11 @@ disable-model-invocation: true
 
 ## P0. 启动与文档位置
 
-用 `/deep-plan <目标> [--doc docs/<路径>.md]` 启动。扩展会立刻:
+用 `/deep-plan <目标> [--doc <路径>]` 启动。扩展会立刻:
 
-- 定位**目标文档**:给了 `--doc` 就用它,否则按目标的 slug 定位 `docs/<slug>.md`
-  (同一主题再次规划会落到同一份文档,而不是新建平行文档)
+- 定位**目标总纲**:`--doc docs/topic/`(结尾斜杠)或指向已存在目录 → 话题文件夹
+  `docs/topic/topic.md`;`--doc docs/x.md` → 该文件;裸名 `--doc docs/x` → 仍按文件处理(兼容);
+  完全不给 `--doc` → 按目标的 slug 定位 `docs/<slug>.md`(同一话题再次规划落到同一份文档)
 - 把可写范围限制在 `docs/` 下 + `.pi/tmp/`,仓库其余部分一律拦截
 - 拦截所有编辑器工具对 docs/ 之外的写入(`edit`/`write`/`replace`/`replace_match`/`insert`/`copy`/`move`/`undo_last_change`)
 - 把 `bash`/`powershell` 限制在只读命令白名单内
@@ -69,6 +70,7 @@ disable-model-invocation: true
 | 术语挑战、规范用语、`_Avoid_` 清单 | 目标文档里的术语小节,按 `CONTEXT-FORMAT.md` 的格式 |
 | 够得上 ADR 的硬决策(难反转 / 读者会问为什么 / 真权衡) | 目标文档的决策小节,按 `ADR-FORMAT.md` 的格式 |
 | 需要独立主题文档(如 `docs/adr/NNNN-*.md`) | 直接在 `docs/` 下新建,并**同步更新 `docs/INDEX.md`** |
+| 某话题的决策多到读不下去 | 拆成 `docs/<topic>/decisions/NNNN-<slug>.md`,一个决策一个文件 |
 
 格式规范以 `domain-modeling` 的 `CONTEXT-FORMAT.md` / `ADR-FORMAT.md` 为准。
 ---
@@ -123,7 +125,8 @@ disable-model-invocation: true
 
 然后说明接下来的两步:
 
-1. **先只提交文档** —— 这一步由用户执行(扩展不代跑 git)。给出示例:
+1. **先只提交文档** —— 提交归属按**本轮对话的指令**:默认由你(执行者)提交;
+   用户说"提交由我来"就交给用户,扩展本身从不代跑 git。给出示例:
 
    ```
    git add docs/ && git commit -m "docs: ..."
@@ -196,8 +199,9 @@ approved: YYYY-MM-DD
 **文档长期留在 `docs/` 原地**:不归档、不按日期重命名、不按日期新建。同一主题的再次规划
 会落到同一份文档上继续完善。历史由 git 记录 —— 这也是为什么文档里不写变化记录。
 
-**索引**:`docs/INDEX.md` 是主题清单。新建文档、或某份文档的主题范围变了,都要同步更新它。
-用 `/deep-plan-docs` 可以让用户列出当前 docs/ 的文档与索引状态。
+**索引**:`docs/INDEX.md` 是**话题清单**,一行一个话题并指向它的总纲(入口),跨话题的硬决策
+(ADR)另起一行。新增话题、或某话题的范围变了,都要同步更新它。
+用 `/deep-plan-docs` 可以列出当前 docs/ 的文档与索引状态(按 索引/话题/条目/单文件 分组)。
 
 ---
 
@@ -209,6 +213,10 @@ approved: YYYY-MM-DD
 - **文档里写按日期排布的变化记录 / 变更日志** → 变化交给 git,`git diff` 就是本次计划。
 - **文档里写一次性计划表或待办清单** → 拆解用 `deep_plan_task`,文档只写长期有效的项目内容。
 - **同一主题新建一份平行文档** → 就地完善已有文档,并在 `docs/INDEX.md` 里定位它。
+- **把条目塞回总纲的子标题**(决策/计划条目已经该各自成文件时)→ 一个条目一个文件。
+- **用 `bash mkdir` 建话题文件夹** → 用 `write` 写第一个文件,父目录自动创建;mkdir 会被门禁拒绝。
+- **给条目文件写 frontmatter** → frontmatter 只属于总纲;条目是纯正文。
+- **把话题专属的决策外溢到 `docs/adr/`** → 话题决策留在话题内,`docs/adr/` 只放跨话题硬决策。
 - 文档里留下 TBD / 留白 / 与 `docs/` 其它文档矛盾 → 文档必须自洽完整。
 - 被范围限制拦住后改用 bash 重定向绕开 → 立刻停止,这是纪律违背。
 - 呈现完之后自己往下开工 → P4 必须停住等用户提交文档并批准。

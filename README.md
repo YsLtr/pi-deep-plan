@@ -13,7 +13,8 @@ own side of the repository:
 | 2. Execution | the repository, with `docs/` frozen | **code only** |
 
 Freezing `docs/` during stage two is what keeps the two commits from ever overlapping. The
-extension does not run git itself — it tells you the boundary and you commit.
+extension never runs git itself: it states the boundary and the owner of the commit is whatever
+the current run's instruction says — the agent by default, or you if you ask for it.
 
 Documents are long-lived project docs, not per-run artifacts: no date in the filename, no
 archive, no changelog. **Git holds the history, and `git diff` is the plan for this run.**
@@ -49,8 +50,8 @@ The extension picks the target document (from `--doc`, else the goal's slug), sc
 | 自查 | Dispatches `researcher` (web) / `scout` (codebase) subagents in parallel, ≤3 concurrent; reports land in `.pi/tmp/`. |
 | 成文 | Refines the target document in place — a project document, not a change log — and breaks the work into independently verifiable `deep_plan_task` items. |
 | 收尾 | Presents once: document path + the **variable-decisions table** + task list. Then it stops. |
-| 提交文档 | You commit `docs/` only. The extension does not run git. |
-| 执行 | `deep_plan_approve` freezes `docs/` and opens the repository; tasks are walked one at a time; `deep_plan_finish` finalizes the document. You commit code only. |
+| 提交文档 | `docs/` only, as its own commit. The agent commits by default; the extension itself never runs git. |
+| 执行 | `deep_plan_approve` freezes `docs/` and opens the repository; tasks are walked one at a time; `deep_plan_finish` finalizes the document. Repo code goes in a separate commit. |
 
 **A document conflict stops the run.** If execution finds the document contradicts the code,
 itself, or a fact it needs, the model must not work around it: `deep_plan_revise conflict=true`
@@ -70,11 +71,36 @@ you review.
 | Tool | `deep_plan_start`, `deep_plan_record_decision`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish` |
 | Tool | `deep_plan_task` (title / add / list / update / remove), `deep_plan_step` (start / done / skip / block / unblock) |
 
+## Layout: a topic is a folder, an entry is a file
+
+```
+docs/
+  INDEX.md                      topic index: one row per topic, pointing at its overview
+  <topic>/
+    <topic>.md                  overview: scope, terms, risks, open questions
+    decisions/NNNN-<slug>.md    one decision per file
+    plan/NNNN-<slug>.md         one plan entry per file
+```
+
+A topic is a long-lived document set, not a run. Inside it, each **entry** — a decision or a plan
+item — is its own file, so it can be linked, reviewed and ordered on its own instead of being a
+`##` heading buried in one long document. Terminology stays in the overview: `CONTEXT-FORMAT.md`
+defines it as a list of terms with paired `_Avoid_`, which splitting into files would break.
+
+The folder is built by writing the first file into it (`write` creates parents); `bash mkdir` is
+denied by the read-only gate in stage one. A topic folder is only created when asked for — via
+`--doc docs/topic/`, or a directory that already exists — so an existing flat `docs/foo.md`
+single-file topic keeps working and is never silently reinterpreted.
+
 Documents carry frontmatter (`title`, `status`, `topics`, `created`, `updated`, `approved`)
 that the extension maintains across stage transitions. `status` is `writing` while documents
 are being refined and `approved` once execution may start. Documents stay in `docs/` in place:
 nothing is archived, renamed, or dated — git holds the history. `docs/INDEX.md` is the topic
-index; `/deep-plan-docs` lists the tree and whether the index exists.
+index; `/deep-plan-docs` lists the tree grouped by layout and whether the index exists.
+
+Entry files are plain prose — frontmatter belongs to the overview alone. `deep_plan_review`
+refuses to close stage one while any entry file is empty; it does not police sequence numbering,
+because the task list, not the file names, owns completeness.
 
 ## The write gate
 

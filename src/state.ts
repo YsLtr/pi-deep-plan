@@ -145,6 +145,41 @@ export function indexFile(cwd: string): string {
 	return path.join(docsDir(cwd), INDEX_BASENAME);
 }
 
+/** Entry sub-folders inside a topic folder. One entry per file. */
+export const DECISIONS_SUBDIR = "decisions";
+export const PLAN_SUBDIR = "plan";
+export type EntryKind = typeof DECISIONS_SUBDIR | typeof PLAN_SUBDIR;
+
+/**
+ * The topic folder for a topic slug: `docs/<topic>/`.
+ *
+ * A topic is a long-lived document set, not a run: its overview file, its decisions and its
+ * plan entries all live under here instead of as `##` sections of one file. There is no date.
+ */
+export function planDir(cwd: string, topic: string): string {
+	return path.join(docsDir(cwd), topic);
+}
+
+/** Zero-padded sequence so the file system sorts entries into their intended order. */
+function padSequence(seq: number): string {
+	return String(seq).padStart(4, "0");
+}
+
+/**
+ * Path of one entry file inside a topic folder: `docs/<topic>/<kind>/NNNN-<slug>.md`.
+ *
+ * Pure: nothing is created. A caller that wants the folder to exist writes the file.
+ */
+export function entryPath(
+	cwd: string,
+	topic: string,
+	kind: EntryKind,
+	slug: string,
+	seq: number,
+): string {
+	return path.join(planDir(cwd, topic), kind, `${padSequence(seq)}-${slugify(slug)}.md`);
+}
+
 /** A document path is anything under `docs/`, so `..` cannot escape the tree. */
 export function isDocPath(cwd: string, target: string): boolean {
 	const docs = path.resolve(docsDir(cwd));
@@ -153,23 +188,46 @@ export function isDocPath(cwd: string, target: string): boolean {
 }
 
 /**
- * Resolve which document a run should work on.
+ * Resolve which overview document a run should work on.
  *
- * An explicit `requested` path wins (relative paths resolve against cwd) as long as it
- * stays inside `docs/`. Otherwise the slug of the goal names the file, so re-planning the
- * same topic lands on the same document instead of creating a sibling.
+ * Three shapes, in order of explicitness:
+ *
+ *   --doc docs/foo/foo.md   → that file (a single-file topic)
+ *   --doc docs/foo/         → the topic folder `docs/foo/`, overview `docs/foo/foo.md`
+ *   --doc docs/foo          → still `docs/foo.md`, as before: a bare name is a file, not a
+ *                             folder, so an existing caller's meaning does not shift under it
+ *   (no --doc)              → the goal's slug, as a single-file topic
+ *
+ * A folder is only ever built when the caller asked for one, so an existing flat `docs/` is
+ * never silently reinterpreted. Nothing is created except the `docs/` root: the folder appears
+ * when the overview file is written into it.
  */
 export function resolveDocPath(cwd: string, goal: string, requested?: string): string {
 	fs.mkdirSync(docsDir(cwd), { recursive: true });
 	if (requested !== undefined && requested.trim() !== "") {
-		const wanted = path.resolve(cwd, requested.trim());
+		const raw = requested.trim();
+		const wanted = path.resolve(cwd, raw);
 		if (!isDocPath(cwd, wanted)) {
 			throw new Error(`文档必须位于 docs/ 下: ${requested}`);
+		}
+		// A trailing separator, or a directory that already exists, asks for a topic folder.
+		const wantsFolder = /[\\/]$/.test(raw) || isDirectory(wanted);
+		if (wantsFolder) {
+			const topic = path.basename(wanted);
+			return path.join(planDir(cwd, topic), `${topic}.md`);
 		}
 		if (path.extname(wanted) === "") return `${wanted}.md`;
 		return wanted;
 	}
 	return path.join(docsDir(cwd), `${slugify(goal)}.md`);
+}
+
+function isDirectory(target: string): boolean {
+	try {
+		return fs.statSync(target).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /** Existing topic documents, for routing a plan to the right one. */
@@ -218,6 +276,34 @@ export function planLink(cwd: string, target: string): string {
 /** How many topic documents exist — reported at startup so the index can be kept honest. */
 export function countDocs(cwd: string): number {
 	return listDocs(cwd).length;
+}
+
+/**
+ * Entry files of the topic that `overview` belongs to, at one level below the topic folder.
+ *
+ * Only the two known entry kinds are walked, and only the topic folder the overview sits in, so
+ * a single-file topic (`docs/foo.md`) yields nothing and a deeper tree is not swept. Missing
+ * kind folders are normal — a topic with no decisions yet is a topic with no decisions.
+ */
+export function listEntryFiles(cwd: string, overview: string): { label: string; path: string }[] {
+	const topicDir = path.dirname(overview);
+	if (path.resolve(topicDir) === path.resolve(docsDir(cwd))) return [];
+
+	const found: { label: string; path: string }[] = [];
+	for (const kind of [DECISIONS_SUBDIR, PLAN_SUBDIR] as const) {
+		const dir = path.join(topicDir, kind);
+		let names: string[];
+		try {
+			names = fs.readdirSync(dir);
+		} catch {
+			continue;
+		}
+		for (const name of names.sort()) {
+			if (name.startsWith(".") || !name.endsWith(".md")) continue;
+			found.push({ label: `${kind}/${name}`, path: path.join(dir, name) });
+		}
+	}
+	return found;
 }
 
 export function resolveScratchDir(cwd: string): string {

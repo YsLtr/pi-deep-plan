@@ -22,6 +22,7 @@ import {
 	isDocPath,
 	isWriteAllowed,
 	indexFile,
+	listEntryFiles,
 	listDocs,
 	planLink,
 	resolveDocPath,
@@ -243,13 +244,21 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"- **不要写一次性计划表或待办清单。** 文档是长期维护的项目开发文档。",
 						"- 维护完整:没有留白、没有 TBD、不与文档其余部分或现有 docs/ 相互矛盾。",
 						"- 已有的目标文档要**就地完善**(改、补、删),不要新建一份平行文档。",
-						"- 主题需要新文档时,在 docs/ 下新建,并同步更新 docs/INDEX.md 的索引。",
-						"- 术语放进文档自己的术语小节(格式见 domain-modeling 的 CONTEXT-FORMAT.md);",
-						"  够得上 ADR 的硬决策写进文档的决策小节(格式见 ADR-FORMAT.md)。",
+						"- 话题是文件夹:总纲 `docs/<topic>/<topic>.md`,决策 `docs/<topic>/decisions/NNNN-<slug>.md`,",
+						"  计划条目 `docs/<topic>/plan/NNNN-<slug>.md`。一个文件一个条目,不要塞回总纲的子标题。",
+						"- 建话题文件夹用 write 写第一个文件(write 会自动建父目录);**不要用 bash mkdir**,",
+						"  它被写作阶段的只读门禁拒绝,试图绕过同样会被拦。",
+						"- 术语放进总纲自己的术语小节(格式见 domain-modeling 的 CONTEXT-FORMAT.md);",
+						"  够得上 ADR 的硬决策写进总纲的决策小节(格式见 ADR-FORMAT.md)。",
+						"- 新增或新开话题时,同步更新 docs/INDEX.md(一行一个话题,指向它的总纲)。",
 						"- 改已有文档请用 write 整篇覆盖,或带上 path 的按行编辑。",
 						"",
 						"收尾: 先 deep_plan_task 把执行阶段要做的事拆成可独立验收的任务,",
 						"再调 deep_plan_review。提交审查前确保文档已写完 —— 之后文档会被冻结。",
+						"",
+						"提交: **由你执行,两段分开。** 本阶段结束先提文档(例如 `git add docs/ && git commit`),",
+						"再问是否批准进入执行阶段;进入执行阶段后的代码另起一个 commit。用户可能改这条委托,",
+						"以本轮对话的指令为准。",
 					]
 						.filter((l) => l !== "")
 						.join("\n"),
@@ -268,8 +277,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					`已定稿的文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(未指定)"}`,
 					"",
 					"1. 按 deep_plan_task 定下的任务逐条推进,每条做完对照验收方式确认。",
-					"2. **提交只针对仓库代码。** 文档改动属于第一阶段的提交,不要混进代码提交里。",
-					"3. 全部完成后调 deep_plan_finish 收尾。",
+					"2. **提交只针对仓库代码。** 文档已经在第一阶段提交过,不要混进代码提交里。",
+					"3. 提交由你执行(除非本轮对话另有指令):代码单独成一个 commit,和文档那次分开。",
+					"4. 全部完成后调 deep_plan_finish 收尾。",
 					"",
 					"**发现文档冲突时(硬要求):停止执行,不要绕过。**",
 					"冲突包括:文档描述与实际代码不符、文档内部自相矛盾、文档漏掉了你正需要的事实、",
@@ -381,8 +391,21 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			}
 			const index = indexFile(ctx.cwd);
 			const hasIndex = fileExists(index);
+			// Show which documents are topic overviews (one per folder) versus standalone
+			// single-file topics, so the layout is visible from the command itself. `listDocs`
+			// returns cwd-relative paths, so strip the `docs/` prefix by hand.
+			const rows = docs.map((d) => {
+				const rel = d.replace(/^docs[\\/]/, "").replace(/\\/g, "/");
+				const parts = rel.split("/");
+				if (parts.length === 2 && parts[0] === parts[1].replace(/\.md$/, "")) {
+					return `  话题 ${parts[0]}/  → ${d}`;
+				}
+				if (parts.length >= 3) return `    条目      ${d}`;
+				if (rel === "INDEX.md") return `  索引      ${d}`;
+				return `  单文件    ${d}`;
+			});
 			ctx.ui.notify(
-				`docs/ 下 ${docs.length} 份文档:\n${docs.map((d) => `  ${d}`).join("\n")}` +
+				`docs/ 下 ${docs.length} 份文档:\n${rows.join("\n")}` +
 					`\n\n索引 ${hasIndex ? "存在" : "缺失"}: ${path.relative(ctx.cwd, index)}` +
 					(hasIndex ? "" : "\n(规划时要求模型同步维护索引)"),
 				hasIndex ? "info" : "warning",
@@ -556,6 +579,19 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			if (s.tasks.length === 0) {
 				problems.push("没有任务拆解(deep_plan_task action=add):执行阶段需要可独立验收的任务。");
 			}
+			// Entries are files in the topic folder. An empty one is a heading with nothing under
+			// it — the file-per-entry split only pays off if each file actually says something.
+			// Sequence gaps are not checked: the task list, not the file numbering, owns completeness.
+			for (const { label, path: file } of await listEntryFiles(ctx.cwd, s.planPath)) {
+				let entryBody = "";
+				try {
+					entryBody = await fs.readFile(file, "utf8");
+				} catch (error) {
+					problems.push(`条目文件读不到(${label}): ${String(error)}`);
+					continue;
+				}
+				if (bodyOf(entryBody) === "") problems.push(`条目文件是空的(${label}): ${file}`);
+			}
 			if (problems.length > 0) {
 				return {
 					content: [{ type: "text", text: `文档阶段未达收尾条件:\n- ${problems.join("\n- ")}` }],
@@ -586,7 +622,8 @@ export default function deepPlan(pi: ExtensionAPI): void {
 							...s.tasks.map((t) => `  ${t.id} ${t.title}`),
 							"",
 							"现在向用户呈现:文档路径 + 上表 + 任务清单,并说明接下来的两步:",
-							"1) **先只提交文档**(示例: `git add docs/ && git commit -m \"docs: ...\"`)—— 这一步由用户执行。",
+							"1) **先只提交文档**(示例: `git add docs/ && git commit -m \"docs: ...\"`)。",
+							"   提交由你执行;若本轮对话把提交委托给了用户,就交给用户做。",
 							"2) 提交完成后,再问是否批准进入执行阶段。",
 							"呈现后停住等回话,不要自己往下开工,也不要把文档正文贴进对话。",
 						].join("\n"),

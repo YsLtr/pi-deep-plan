@@ -17,6 +17,7 @@ import {
 	INACTIVE,
 	collectAnchors,
 	countDocs,
+	crossPostedDecisions,
 	extractWriteTarget,
 	fromPersisted,
 	isDocPath,
@@ -596,6 +597,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				}
 				if (bodyOf(entryBody) === "") problems.push(`条目文件是空的(${label}): ${file}`);
 			}
+			// A decision belongs in one place: inside its topic, or in docs/adr/ when it binds every
+			// topic. The same decision in both is the drift the split exists to prevent.
+			problems.push(...crossPostedDecisions(ctx.cwd, s.planPath));
 			if (problems.length > 0) {
 				return {
 					content: [{ type: "text", text: `文档阶段未达收尾条件:\n- ${problems.join("\n- ")}` }],

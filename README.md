@@ -102,6 +102,10 @@ Entry files are plain prose — frontmatter belongs to the overview alone. `deep
 refuses to close stage one while any entry file is empty; it does not police sequence numbering,
 because the task list, not the file names, owns completeness.
 
+`docs/adr/` holds decisions that bind every topic; a topic's own `decisions/` holds what that topic
+decided. One decision filed in both places is drift, so `deep_plan_review` compares the entry files
+against the ADR bodies and refuses the pair — the boundary is checked, not just written down.
+
 ## The write gate
 
 Two independent gates enforce the stage boundary.

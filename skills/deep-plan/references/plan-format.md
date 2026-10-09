@@ -64,6 +64,7 @@ docs/
 需要独立成篇的**跨话题**硬决策,直接在 `docs/adr/NNNN-<slug>.md` 建 ADR(按 `ADR-FORMAT.md`),
 并同步更新 `docs/INDEX.md`。**只属于本话题**的决策不要外溢到 `docs/adr/`,留在上面的决策记录里;
 若本话题决策多到用子标题读不下去,才拆成 `docs/<topic>/decisions/NNNN-<slug>.md`,一个决策一个文件。
+**同一条决策不能两处都有** —— `deep_plan_review` 会用正文比对检出重复并退回。
 
 置信度低的结论必须同时出现在「可变决策表」里。
 

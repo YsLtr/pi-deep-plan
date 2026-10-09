@@ -110,7 +110,8 @@ disable-model-invocation: true
 - `deep_plan_task action=add` 逐条追加,每条必须**可独立验收**。
 - `deep_plan_task action=list` 复核清单与进度。
 
-写完调 `deep_plan_review` 收尾。它会校验:文档正文非空、可变决策 3-8 条、决策记录非空、**任务至少一条**。
+写完调 `deep_plan_review` 收尾。它会校验:文档正文非空、可变决策 3-8 条、决策记录非空、
+**任务至少一条**、**条目文件都非空**、**没有决策同时出现在话题内与 `docs/adr/`**。
 不达标会退回并列出原因。
 
 ---

@@ -166,6 +166,12 @@ export const PLAN_SUBDIR = "plan";
 export type EntryKind = typeof DECISIONS_SUBDIR | typeof PLAN_SUBDIR;
 
 /**
+ * Where cross-topic hard decisions live. Kept separate from a topic's own `decisions/`: that
+ * folder holds decisions belonging to one topic, this one holds decisions every topic answers to.
+ */
+export const ADR_SUBDIR = "adr";
+
+/**
  * The topic folder for a topic slug: `docs/<topic>/`.
  *
  * A topic is a long-lived document set, not a run: its overview file, its decisions and its
@@ -319,6 +325,64 @@ export function listEntryFiles(cwd: string, overview: string): { label: string; 
 		}
 	}
 	return found;
+}
+
+/**
+ * Cross-topic ADR files, `docs/adr/*.md`.
+ *
+ * A topic's own decisions belong under that topic; only decisions every topic answers to belong
+ * here. Returning the list lets a caller notice the same decision recorded in both places.
+ */
+export function listAdrFiles(cwd: string): string[] {
+	const dir = path.join(docsDir(cwd), ADR_SUBDIR);
+	let names: string[];
+	try {
+		names = fs.readdirSync(dir);
+	} catch {
+		return [];
+	}
+	return names
+		.filter((n) => !n.startsWith(".") && n.endsWith(".md"))
+		.sort()
+		.map((n) => path.join(dir, n));
+}
+
+/**
+ * Complaints about a decision recorded both inside its topic and in `docs/adr/`.
+ *
+ * A topic's `decisions/` holds what that topic decided; `docs/adr/` holds what every topic answers
+ * to. Filing one decision in both means a later reader finds two copies that can drift apart, so
+ * the pair is reported instead of leaving the boundary to convention alone.
+ */
+export function crossPostedDecisions(cwd: string, overview: string): string[] {
+	const topicDecisions = listEntryFiles(cwd, overview).filter((e) =>
+		e.label.startsWith(`${DECISIONS_SUBDIR}/`),
+	);
+	if (topicDecisions.length === 0) return [];
+	const adrs = listAdrFiles(cwd);
+	if (adrs.length === 0) return [];
+
+	const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();
+	const read = (file: string): string => {
+		try {
+			return flatten(fs.readFileSync(file, "utf8"));
+		} catch {
+			return "";
+		}
+	};
+
+	const adrText = adrs.map(read).filter((t) => t !== "");
+	const problems: string[] = [];
+	for (const entry of topicDecisions) {
+		const own = read(entry.path);
+		if (own !== "" && adrText.some((t) => t.includes(own))) {
+			problems.push(
+				`决策在两处重复(${entry.label} 与 docs/${ADR_SUBDIR}/):` +
+					"话题自己的决策留在话题内,只有跨越所有话题的硬决策才进 docs/adr/。",
+			);
+		}
+	}
+	return problems;
 }
 
 export function resolveScratchDir(cwd: string): string {

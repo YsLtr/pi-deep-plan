@@ -8,6 +8,7 @@ import * as path from "node:path";
 import {
 	FILE_MUTATION_TOOLS,
 	collectAnchors,
+	crossPostedDecisions,
 	entryPath,
 	INACTIVE,
 	extractWriteTarget,
@@ -223,6 +224,41 @@ test("resolveOverview follows a topic that moved into its folder", () => {
 		// Nothing to follow: return what the caller had, so it still reports its own path.
 		const missing = path.join(cwd, "docs", "nowhere.md");
 		assert.equal(resolveOverview(cwd, missing), missing);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+// A decision lives in its topic, or in docs/adr/ when it binds every topic — not both. Two
+// copies of one decision can drift apart, so the duplicate pair is reported.
+test("crossPostedDecisions flags a decision filed in both places", () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dp-cross-"));
+	try {
+		const topicDir = path.join(cwd, "docs", "x-topic");
+		const decisions = path.join(topicDir, "decisions");
+		const adrDir = path.join(cwd, "docs", "adr");
+		fs.mkdirSync(decisions, { recursive: true });
+		fs.mkdirSync(adrDir, { recursive: true });
+		const overview = path.join(topicDir, "x-topic.md");
+		fs.writeFileSync(overview, "# Topic\n", "utf8");
+
+		const own = "用 JSON 而不是 XML。\n";
+		fs.writeFileSync(path.join(decisions, "0001-use-json.md"), own, "utf8");
+
+		// No ADRs yet: a topic decision on its own is fine.
+		assert.deepEqual(crossPostedDecisions(cwd, overview), []);
+		// An unrelated ADR is fine too — the folders are allowed to coexist.
+		fs.writeFileSync(path.join(adrDir, "0001-monorepo.md"), "Keep it a monorepo.\n", "utf8");
+		assert.deepEqual(crossPostedDecisions(cwd, overview), []);
+		// The same decision in both is reported, naming the duplicate.
+		fs.writeFileSync(path.join(adrDir, "0002-also-json.md"), `# dup\n\n${own}`, "utf8");
+		const found = crossPostedDecisions(cwd, overview);
+		assert.equal(found.length, 1);
+		assert.match(found[0]!, /decisions\/0001-use-json\.md/);
+		// A single-file topic has no decisions folder, so there is nothing to duplicate.
+		const flat = path.join(cwd, "docs", "flat.md");
+		fs.writeFileSync(flat, "# flat\n", "utf8");
+		assert.deepEqual(crossPostedDecisions(cwd, flat), []);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

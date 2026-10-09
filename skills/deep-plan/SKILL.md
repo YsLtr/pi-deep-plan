@@ -21,13 +21,15 @@ disable-model-invocation: true
 用 `/deep-plan <目标>` 启动。扩展会立刻:
 
 - 分配方案文档路径(`<cwd>/docs/plans/<YYYY-MM-DD>-<slug>.md`),并开启**硬写保护**
-- 拦截所有编辑器工具对其它路径的写入(`edit`/`write`/`replace`/`insert`/`undo_last_change`)
+- 拦截所有编辑器工具对其它路径的写入(`edit`/`write`/`replace`/`replace_match`/`insert`/`copy`/`move`/`undo_last_change`)
 - 把 `bash`/`powershell` 限制在只读命令白名单内
 - 状态栏显示当前阶段
 
 放行例外只有两个:方案文档本身,以及 `.pi/tmp/`(子代理报告用)。
 被拦时不要尝试绕过,直接调 `deep_plan_approve` 走后门是错的——那是用户批准后才用的。
 
+改方案文档本身也必须**带 `path`**(或改用 `write` 整篇覆盖):`replace`/`insert` 这类按行编辑靠锚点定文件,
+不带 `path` 时门禁无法判定目标,会一律拦下并提示"目标路径无法确定"。
 随后加载两项纪律(各读一次,分开读):
 
 - `read` `~/.pi/agent/skills/grilling/SKILL.md` — 设计树与 frontier 机制
@@ -48,6 +50,20 @@ disable-model-invocation: true
 铁律:**没有任何东西被默默假设。** 凡是"我假定用户想要 X"的地方,
 要么是一条 D(决策记录),要么是一行 V(可变决策)。两者都不是 = 漏了。
 
+### domain-modeling 的产物写到哪(重要)
+
+P1 加载了 domain-modeling,但它的两条落盘纪律(「术语一确定就写 `CONTEXT.md`」、
+「值得记的决策立刻写 `docs/adr/NNNN-*.md`」)在规划阶段**被写保护禁用**。这不是遗漏,
+是刻意的:规划阶段只有方案文档可写。所以按下面的映射走,**不要试图去写仓库**:
+
+| domain-modeling 要求 | 规划阶段落到哪 |
+|---|---|
+| 术语挑战、规范用语、`_Avoid_` 清单 | 方案文档的「术语与领域模型」一节,按 `CONTEXT-FORMAT.md` 的格式 |
+| 够得上 ADR 的硬决策(难反转 / 读者会问为什么 / 真权衡) | 方案文档「决策记录」里那条,补上 ADR 要求的"被否决的备选与其理由" |
+| 真正创建/更新 `CONTEXT.md`、`docs/adr/` | 写成 P5 执行阶段的任务,放进任务清单 |
+
+`CONTEXT.md` 与 `docs/adr/` 的格式规范仍以 `domain-modeling` 的
+`CONTEXT-FORMAT.md` / `ADR-FORMAT.md` 为准 —— 只是**内容先写进方案文档**,执行阶段再落盘。
 ---
 
 ## P2. 自查(派子代理,不问用户)

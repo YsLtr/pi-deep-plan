@@ -53,7 +53,6 @@ you review.
 | Command | `/deep-plan <goal>`, `/deep-plan-status`, `/deep-plan-gc [days] [apply]` |
 | Tool | `deep_plan_start`, `deep_plan_record_decision`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish` |
 | Tool | `deep_plan_task` (title / add / list / update / remove), `deep_plan_step` (start / done / skip / block / unblock) |
-| Prompt | `/deep-plan-go <goal>` |
 
 Plan documents carry frontmatter (`title`, `status`, `created`, `session`, `approved`,
 `completed`, `archived`) that the extension maintains across phase transitions. Finished plans
@@ -62,7 +61,24 @@ plans (dry-run unless `apply` is passed).
 
 ## The write gate
 
-`src/readonly.ts` gates `bash`/`powershell` during P1–P4. It tokenizes with `shell-quote`
+Two independent gates run during P1–P4 (planning and review).
+
+**File mutations.** `src/state.ts` holds `PATH_FIELDS` (an explicit `path`/`file`/`file_path`)
+and `ANCHOR_FIELDS` (the anchor arguments of each anchored editor), and `extractWriteTarget`
+turns a call into a target path. Every entry in `FILE_MUTATION_TOOLS` — `edit`, `write`,
+`replace`, `replace_match`, `insert`, `copy`, `move`, `undo_last_change` — is checked against
+`isWriteAllowed`. A call with no recognisable target is blocked; a call naming a file outside
+the allowlist is blocked.
+
+The anchored editors (`replace`/`replace_match`/`insert`/`copy`/`move`) do not take a usable
+`path` — theirs is optional and rejected unless require-path mode is on — so the gate resolves
+their target from the anchor instead. Because Pi gives every package its own module root, the
+gate cannot read the editor's anchor registry; it rebuilds the `anchor -> file` map from the
+rows those tools serve (`aBcD│content`, `+aBcD│`, `-aBcD│`) as `read` results arrive
+(`collectAnchors`). An anchor this session never saw served passes through, and the editor
+rejects it as stale anyway.
+
+**Shell.** `src/readonly.ts` gates `bash`/`powershell`. It tokenizes with `shell-quote`
 (quote- and operator-aware) and checks every simple command in the pipeline against an
 allowlist, following the approach of codex-cli's `is_known_safe_command`. It fails closed:
 anything unparsed, unknown, or not provably read-only is refused.
@@ -76,7 +92,7 @@ Refused — writers and process spawners (`rm`, `mv`, `cp`, `tee`, `sed -i`, `fi
 and sub-shell parentheses.
 
 The only write exceptions are the plan document itself and `.pi/tmp/` (subagent reports).
-
+Both gates are lifted by `deep_plan_approve` and only by it.
 ## Layout
 
 ```
@@ -87,7 +103,6 @@ src/state.ts        plan-document frontmatter + phase state
 src/archive.ts      plan archiving / gc
 src/tasks.ts        task list bookkeeping
 skills/deep-plan/   the deep-plan skill + plan-format / research-contract references
-prompts/            /deep-plan-go prompt template
 ```
 
 ## Development

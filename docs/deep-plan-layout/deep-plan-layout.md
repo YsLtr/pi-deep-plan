@@ -1,6 +1,6 @@
 ---
 title: deep-plan 文档布局：话题文件夹与条目分划
-status: writing
+status: approved
 topics: deep-plan 扩展的 docs/ 布局、条目粒度、话题路由
 created: 2026-10-09
 updated: 2026-10-09

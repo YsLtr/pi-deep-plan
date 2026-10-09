@@ -15,6 +15,7 @@ import {
 	planDir,
 	planLink,
 	resolveDocPath,
+	resolveOverview,
 } from "./state.ts";
 import type { PlanState } from "./state.ts";
 
@@ -199,6 +200,29 @@ test("resolveDocPath accepts folder, file, explicit and bare forms", () => {
 		);
 		// Anything outside docs/ is refused rather than normalized somewhere unexpected.
 		assert.throws(() => resolveDocPath(cwd, "g", "../outside.md"), /docs\//);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+// A run records the path it started with. Once a topic moves into its folder, that recorded
+// path is stale — following it would silently skip stamping the file the run actually produced.
+test("resolveOverview follows a topic that moved into its folder", () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dp-overview-"));
+	try {
+		const flat = path.join(cwd, "docs", "x-topic.md");
+		const moved = path.join(cwd, "docs", "x-topic", "x-topic.md");
+		fs.mkdirSync(path.dirname(moved), { recursive: true });
+		fs.writeFileSync(moved, "# moved\n", "utf8");
+
+		// The recorded path is gone and the topic folder holds the overview: follow it.
+		assert.equal(resolveOverview(cwd, flat), moved);
+		// Once the recorded path exists it wins, so an ordinary flat topic is untouched.
+		fs.writeFileSync(flat, "# flat\n", "utf8");
+		assert.equal(resolveOverview(cwd, flat), flat);
+		// Nothing to follow: return what the caller had, so it still reports its own path.
+		const missing = path.join(cwd, "docs", "nowhere.md");
+		assert.equal(resolveOverview(cwd, missing), missing);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

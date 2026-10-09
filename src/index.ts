@@ -26,6 +26,7 @@ import {
 	listDocs,
 	planLink,
 	resolveDocPath,
+	resolveOverview,
 	resolveScratchDir,
 	stateEntryType,
 	toPersisted,
@@ -559,6 +560,9 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				};
 			}
 			if (s.planPath === undefined) throw new Error("文档路径未分配");
+			// A topic that moved into its folder is still this run's document; stamping the
+			// recorded path would silently skip it.
+			s.planPath = resolveOverview(ctx.cwd, s.planPath);
 			const fs = await import("node:fs/promises");
 			let body = "";
 			try {
@@ -649,6 +653,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				throw new Error(`当前阶段是 ${s.phase},已经在执行阶段。`);
 			}
 			if (s.planPath === undefined) throw new Error("文档路径未分配");
+			s.planPath = resolveOverview(ctx.cwd, s.planPath);
 			const fs = await import("node:fs/promises");
 			let body = "";
 			try {
@@ -719,7 +724,10 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			}
 			if (params.conflict === true) s.haltReason = params.reason;
 
-			await stampDoc(s.planPath ?? "", { status: "writing", updated: isoDate() });
+			await stampDoc(
+				s.planPath !== undefined ? resolveOverview(ctx.cwd, s.planPath) : "",
+				{ status: "writing", updated: isoDate() },
+			);
 			setPhase("writing", ctx);
 			return {
 				content: [
@@ -762,7 +770,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			requireActive();
-			const planPath = state.planPath;
+			const planPath = state.planPath !== undefined ? resolveOverview(ctx.cwd, state.planPath) : undefined;
 			const status = params.status ?? "done";
 
 			// Finalize the plan BEFORE clearing state, so a failure leaves the loop

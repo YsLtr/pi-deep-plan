@@ -145,6 +145,21 @@ export function indexFile(cwd: string): string {
 	return path.join(docsDir(cwd), INDEX_BASENAME);
 }
 
+/**
+ * The overview file that `recorded` refers to, following a topic that moved into its folder.
+ *
+ * A run records the path it started with. If that path is gone, the topic may have been
+ * re-homed at `docs/<topic>/<topic>.md` — treating that as "no document" would silently skip
+ * stamping the very file the run produced. Returns the recorded path when nothing else fits, so
+ * callers keep reporting the path they were given.
+ */
+export function resolveOverview(cwd: string, recorded: string): string {
+	if (fs.existsSync(recorded)) return recorded;
+	const stem = path.basename(recorded, ".md");
+	const inTopic = path.join(planDir(cwd, stem), `${stem}.md`);
+	return fs.existsSync(inTopic) ? inTopic : recorded;
+}
+
 /** Entry sub-folders inside a topic folder. One entry per file. */
 export const DECISIONS_SUBDIR = "decisions";
 export const PLAN_SUBDIR = "plan";

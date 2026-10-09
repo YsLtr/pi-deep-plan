@@ -74,7 +74,7 @@ disable-model-invocation: true
 **提问与回答环节是强制的,不是可选项:**
 每轮推进都必须**先写出问题、再写出答案**这两步。跳过提问直接给结论 = 漏掉了规划过程,
 收尾时会被 `deep_plan_review` 退回(该工具要求「可变决策」至少 3 条 —— 那是 frontier 里
-真正需要取舍的那些问题的落点)。只写问题不给答案同样不算。
+真正需要取舍的那些问题的记录位置)。只写问题不给答案同样不算。
 
 铁律:
 
@@ -207,7 +207,7 @@ disable-model-invocation: true
 
 - `deep_plan_step action=start` 开始一个任务(同时只能有一个进行中)。
 - 做完对照该任务的验收方式确认,再 `deep_plan_step action=done`。
-- 卡住时用 `action=block note=...` 记录受阻原因,解除后 `action=unblock`;确实不做的用 `action=skip`。
+- 受阻时用 `action=block note=...` 记录受阻原因,解除后用 `action=unblock`;确定不做的用 `action=skip`。
 ### 发现文档冲突 → 停止执行,不要绕过(硬要求)
 
 执行中**必须停下来回到文档阶段**的情况:

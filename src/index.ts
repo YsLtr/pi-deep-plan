@@ -34,6 +34,7 @@ import {
 	type PlanState,
 	type VariableDecision,
 } from "./state.ts";
+import { matchesGrant, recordBlocked } from "./intercept.ts";
 import { readOnlyVerdict } from "./readonly.ts";
 import { progressOf, registerTaskTools, renderTaskLines } from "./tasks.ts";
 import { bodyOf, isoDate, stampDoc } from "./archive.ts";
@@ -120,6 +121,8 @@ export default function deepPlan(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async () => {
 		state = { ...INACTIVE };
 		anchorPaths.clear();
+		grantedCommand = undefined;
+		grantedRun = undefined;
 	});
 
 
@@ -151,6 +154,19 @@ export default function deepPlan(pi: ExtensionAPI): void {
 	}
 
 	// --------------------------------------------------------------- the gate
+
+	/**
+	 * Command the user approved once through `deep_plan_request_allow`. Consumed by the next call
+	 * that matches it verbatim, so the same command meets the wall again. In memory only — a grant
+	 * must not survive the session that granted it.
+	 */
+	let grantedCommand: string | undefined;
+
+	/**
+	 * The run the grant was approved in. A later run in the same session must not inherit the
+	 * approval, so the gate requires the id to match the current run's `startedAt`.
+	 */
+	let grantedRun: number | undefined;
 
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -201,14 +217,33 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			const command = (event.input as Record<string, unknown>).command;
 			if (typeof command !== "string") return;
 			const verdict = readOnlyVerdict(command);
-			if (!verdict.ok) {
-				return {
-					block: true,
-					reason:
-						`deep-plan 文档阶段:只允许只读命令(改动交给 git 与编辑器)。\n被阻止: ${command}` +
-						`\n原因: ${verdict.reason}`,
-				};
+			if (verdict.ok) return;
+			// A command the user approved once passes here exactly once: the grant is consumed
+			// before the call runs, so the identical text is refused again on the next call.
+			if (grantedRun === state.startedAt && matchesGrant(grantedCommand, command)) {
+				grantedCommand = undefined;
+				grantedRun = undefined;
+				return;
 			}
+			try {
+				recordBlocked(ctx.cwd, {
+					at: new Date().toISOString(),
+					phase: state.phase,
+					tool: event.toolName,
+					command,
+					reason: verdict.reason,
+				});
+			} catch (error) {
+				// The refusal must not depend on the log: a failed append still blocks.
+				ctx.ui.notify(`deep-plan:拦截记录写入失败 ${String(error)}`, "warning");
+			}
+			return {
+				block: true,
+				reason:
+					`deep-plan 文档阶段:只允许只读命令(改动交给 git 与编辑器)。\n被阻止: ${command}` +
+					`\n原因: ${verdict.reason}` +
+					`\n如该命令实际只读、只是未通过白名单,可调 deep_plan_request_allow 申请一次性放行(需用户确认)。`,
+			};
 		}
 	});
 
@@ -224,7 +259,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					content: [
 						"[DEEP PLAN — 第一阶段:文档]",
 						"范围: 只有 docs/ 下的文档可写(以及 .pi/tmp/ 的 scratch)。仓库代码、README、AGENTS.md 都不可写。",
-						"bash/powershell 只允许只读命令。不要尝试绕过。",
+						"bash/powershell 只允许只读命令。不要尝试绕过。实际只读而未被识别的命令,可用 deep_plan_request_allow 申请一次性放行(需用户同意);写类命令不得申请。",
 						"",
 						`本次文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(未指定)"}`,
 						`docs/ 现有文档(${countDocs(ctx.cwd)}): ${listDocs(ctx.cwd).slice(0, 20).join(", ") || "(空)"}`,
@@ -779,6 +814,84 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			};
 		},
 	});
+	pi.registerTool({
+		name: "deep_plan_request_allow",
+		label: "Request One-Time Allow",
+		description:
+			"被只读墙拦下、但**实际只读**的命令可申请一次性放行(命令本身不写文件、不删除、不执行任意代码,只是未通过白名单或未被解析识别):" +
+			"用户同意后该命令的下一次调用被放行,用完即失效 —— 同一命令再次调用仍会被拦。" +
+			"命令须与拦截文案里的「被阻止」逐字一致;理由须给出该命令实际只读的依据,并说明有无只读替代。不得为写类命令申请。",
+		promptSnippet: "Ask the user to allow one blocked read-only command once",
+		parameters: Type.Object({
+			command: Type.String({ description: "被拦下的完整命令,须与拦截文案里的「被阻止」逐字一致" }),
+			readOnly: Type.Boolean({
+				description: "确认该命令实际只读:不写文件、不删除、不执行任意代码,只是未被只读墙识别",
+			}),
+			reason: Type.String({ description: "该命令实际只读的依据,以及它在文档阶段为何必要、有无只读替代" }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const s = requireActive();
+			if (s.phase !== "writing") {
+				return {
+					content: [{ type: "text", text: "当前是执行阶段,没有只读墙,直接执行即可。" }],
+					details: undefined,
+				};
+			}
+			if (!params.readOnly) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "未确认为实际只读的命令,不予申请。写类命令在文档阶段一律不做;请改用只读替代。",
+						},
+					],
+					details: undefined,
+				};
+			}
+			const command = params.command.trim();
+			if (command === "") {
+				return { content: [{ type: "text", text: "命令为空,无法申请放行。" }], details: undefined };
+			}
+			if (readOnlyVerdict(command).ok) {
+				return {
+					content: [{ type: "text", text: "这条命令本来就通过只读墙,无需申请。" }],
+					details: undefined,
+				};
+			}
+			if (!ctx.hasUI) {
+				return {
+					content: [
+						{ type: "text", text: "当前环境没有可交互 UI,取不到用户同意 —— 该命令仍会被拦。" },
+					],
+					details: undefined,
+				};
+			}
+			const choice = await ctx.ui.select(
+				`申请一次性放行以下命令(仅这一次;之后同一命令仍会被拦):\n${command}\n\n自述实际只读,依据: ${params.reason}`,
+				["放行一次", "拒绝"],
+			);
+			if (choice !== "放行一次") {
+				return {
+					content: [{ type: "text", text: "用户未批准,该命令仍被只读墙拦截。" }],
+					details: undefined,
+				};
+			}
+			grantedCommand = command;
+			grantedRun = s.startedAt;
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							"已获准一次性放行。现在可执行该命令,放行机会在这一次调用后失效;" +
+							"同一命令再次调用仍需重新申请。",
+					},
+				],
+				details: undefined,
+			};
+		},
+	});
+
 	// ------------------------------------------------------- task tracking
 	registerTaskTools(pi, {
 		getState: () => state,

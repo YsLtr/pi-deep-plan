@@ -68,7 +68,7 @@ you review.
 | Kind | Name |
 | --- | --- |
 | Command | `/deep-plan <goal> [--doc <path>]`, `/deep-plan-status`, `/deep-plan-docs` |
-| Tool | `deep_plan_start`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish` |
+| Tool | `deep_plan_start`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish`, `deep_plan_request_allow` |
 | Tool | `deep_plan_task` (title / add / list / update / remove), `deep_plan_step` (start / done / skip / block / unblock) |
 
 ## Layout: a topic is a folder, an entry is a file
@@ -148,6 +148,12 @@ redirections (`2>&1`, `2>/dev/null`, `>&-`).
 Refused — writers and process spawners (`rm`, `mv`, `cp`, `tee`, `sed -i`, `find -exec`,
 `sudo`, `bash -c`, `npm install`, `cargo build`), every real file redirection, background `&`,
 and sub-shell parentheses.
+
+Every refusal is appended to `.pi/deep-plan-blocked.log` (one JSON object per line, gitignored), so
+the allowlist can be tuned from commands that were actually refused. A command that is genuinely
+read-only but unrecognised (say `bat file`) can be requested through `deep_plan_request_allow`, with
+the model attesting it is read-only and saying why; you approve it in the UI and that one command
+runs once — the same text meets the wall again next time. Writers are not eligible.
 Both gates are lifted out of the way by `deep_plan_approve` and re-armed by `deep_plan_revise`.
 
 ## Layout
@@ -159,6 +165,7 @@ src/readonly.test.ts   gate regression tests
 src/state.ts        document paths, stage state, write scopes, anchor resolution
 src/archive.ts      document frontmatter parsing / stamping
 src/tasks.ts        task list bookkeeping
+src/intercept.ts    interception log + the one-time allow grant
 skills/deep-plan/   the deep-plan skill + doc-format / research-contract references
 ```
 

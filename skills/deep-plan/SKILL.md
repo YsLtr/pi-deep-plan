@@ -33,10 +33,10 @@ disable-model-invocation: true
   完全不给 `--doc` → 按目标的 slug 定位 `docs/<slug>.md`(同一话题再次规划时定位到同一份文档)
 - 把可写范围限制在 `docs/` 下 + `.pi/tmp/`,仓库其余部分一律拦截
 - 拦截所有编辑器工具对 docs/ 之外的写入(`edit`/`write`/`replace`/`replace_match`/`insert`/`copy`/`move`/`undo_last_change`)
-- 把 `bash`/`powershell` 限制在只读命令白名单内
+- 把 `bash`/`powershell` 限制在只读命令白名单内(确有必要时可用 `deep_plan_request_allow` 申请一次性放行,需用户同意)
 - 状态栏显示当前阶段
 
-被拦时不要尝试绕过:文档阶段就是只改文档,`deep_plan_approve` 是用户批准后用的,不是绕门工具。
+被拦时不要尝试绕过:文档阶段就是只改文档,`deep_plan_approve` 是用户批准后用的,不是绕门工具。**实际只读、只是未被只读墙识别的命令**(如 `bat file`),可用 `deep_plan_request_allow` 申请一次性放行 —— 申请须带 `readOnly=true` 与只读依据,用户同意后该命令执行一次,同一命令再次调用仍需申请;**写类命令不得申请**,改用只读替代;被拒后停止,不重复申请。每次拦截都记录在 `.pi/deep-plan-blocked.log`。
 
 改已有文档时必须**带 `path`**(或改用 `write` 整篇覆盖):`replace`/`insert` 这类按行编辑靠锚点定文件,
 锚点定位不到时门禁会一律拦下。

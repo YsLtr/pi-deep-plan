@@ -4,7 +4,7 @@
 阶段一期间,`docs/` 下**任意**文档与 `.pi/tmp/`(子代理报告)可写。
 
 **范围是 harness 层的硬拦截。** 阶段一仅放行 `docs/` 内的写入;`edit`/`write`/`replace`/`replace_match`/`insert`/`copy`/`move`/`undo_last_change`
-对 `docs/` 之外的写入会被直接阻断。`bash`/`powershell` 仅放行只读命令。被拦截时不得改用重定向或其他工具绕过。
+对 `docs/` 之外的写入会被直接阻断。`bash`/`powershell` 仅放行只读命令。被拦截时不得改用重定向或其他工具绕过。**实际只读、只是未被识别的命令**可用 `deep_plan_request_allow` 申请一次性放行(须带 `readOnly=true` 与只读依据,需用户同意;同一命令再次调用仍需申请);写类命令不得申请。
 修改已有文档须带 `path`(或整篇 `write` 覆盖);否则门禁无法判定目标,一律拦截。
 
 ## docs/ 是开发文档 (development)

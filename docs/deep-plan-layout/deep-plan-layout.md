@@ -53,6 +53,7 @@ deep-plan 现在规定 `docs/` 下**一个话题一个文件**(`docs/<slug>.md`)
 | D7 | 补 `resolveDocPath` 直测,并清理测试里的旧布局硬编码 | [decisions/0007-direct-tests-resolvedocpath.md](./decisions/0007-direct-tests-resolvedocpath.md) |
 | D8 | 提交归属是每次运行的偏好,不写死在文档与收尾契约里 | [decisions/0008-commit-ownership-per-run.md](./decisions/0008-commit-ownership-per-run.md) |
 | D9 | 建话题文件夹用 write 隐式建父目录,不放开 mkdir | [decisions/0009-write-creates-parent-not-mkdir.md](./decisions/0009-write-creates-parent-not-mkdir.md) |
+| D10 | ADR 与话题决策的边界由检查守住,不只靠约定 | [decisions/0010-adr-boundary-is-checked.md](./decisions/0010-adr-boundary-is-checked.md) |
 
 ## 术语与领域模型
 
@@ -123,7 +124,9 @@ _Avoid_: 目录 (catalog)、清单 (manifest)
   判定:这两份格式属 domain-modeling skill 的职责范围,路径在 `~/.pi/agent/skills/domain-modeling/`
   (已确认该目录下两份文件存在),**不在本仓库内**,因此本方案的「计划」条目不修改它们,
   只让本仓库文档与之对齐。
-- **未能查证**:`docs/adr/` 与 `docs/<topic>/decisions/` 并存是否会造成两处决策。已尝试:
-  遍历 `plan-format.md:42` 与 `SKILL.md:71` 的措辞。判定:ADR 是「需要独立成篇的硬决策」的
-  全局位,`decisions/` 是「某话题内的决策」的话题位;两者用 `INDEX.md` 一行关联。
-  是否需要进一步约束(例如话题内决策禁止外溢到 `docs/adr/`)留待执行阶段按实际情况决定。
+- **已解决**(原「未能查证」):`docs/adr/` 与 `docs/<topic>/decisions/` 并存是否会造成两处决策。
+  实际情况已确定,不再留待决定:两者分工固定 —— ADR 是**跨话题**硬决策的全局位,
+  `decisions/` 是**某话题内**决策的话题位。同一决策同时出现在两处即为漂移,已由
+  `crossPostedDecisions()`(`src/state.ts`)检出,`deep_plan_review` 会退回并指名重复的那一对
+  (见 [decisions/0010-adr-boundary-is-checked.md](./decisions/0010-adr-boundary-is-checked.md))。
+  之所以做成检查而不是只写约定:两处副本会各自演化,而读到哪一份取决于翻到哪个文件。

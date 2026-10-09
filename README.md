@@ -46,7 +46,7 @@ The extension picks the target document (from `--doc`, else the goal's slug), sc
 
 | Stage | What happens |
 | --- | --- |
-| 自问 | Builds a design tree (from the `grilling` skill), answers every frontier question itself, and records each conclusion as a decision with evidence + confidence. |
+| 自问 | Builds a design tree and works its frontier in rounds — **writing each question out and then answering it**, so the questioning always happens and never blocks on the user. Conclusions become results in the document. |
 | 自查 | Dispatches `researcher` (web) / `scout` (codebase) subagents in parallel, ≤3 concurrent; reports land in `.pi/tmp/`. |
 | 成文 | Refines the target document in place — a project document, not a change log — and breaks the work into independently verifiable `deep_plan_task` items. |
 | 收尾 | Presents once: document path + the **variable-decisions table** + task list. Then it stops. |
@@ -68,29 +68,44 @@ you review.
 | Kind | Name |
 | --- | --- |
 | Command | `/deep-plan <goal> [--doc <path>]`, `/deep-plan-status`, `/deep-plan-docs` |
-| Tool | `deep_plan_start`, `deep_plan_record_decision`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish` |
+| Tool | `deep_plan_start`, `deep_plan_record_variable`, `deep_plan_review`, `deep_plan_approve`, `deep_plan_revise`, `deep_plan_finish` |
 | Tool | `deep_plan_task` (title / add / list / update / remove), `deep_plan_step` (start / done / skip / block / unblock) |
 
 ## Layout: a topic is a folder, an entry is a file
 
 ```
 docs/
-  INDEX.md                      topic index: one row per topic, pointing at its overview
+  INDEX.md                      topic index / development entry point
   <topic>/
     <topic>.md                  overview: scope, terms, risks, open questions
-    decisions/NNNN-<slug>.md    one decision per file
     plan/NNNN-<slug>.md         one plan entry per file
 ```
 
-A topic is a long-lived document set, not a run. Inside it, each **entry** — a decision or a plan
-item — is its own file, so it can be linked, reviewed and ordered on its own instead of being a
-`##` heading buried in one long document. Terminology stays in the overview: `CONTEXT-FORMAT.md`
-defines it as a list of terms with paired `_Avoid_`, which splitting into files would break.
+`docs/` **is** the project's development documentation — it takes the place of a root
+`development.md`. How to build, how to test, the conventions, and each topic's design conclusions
+all live here, entered through `docs/INDEX.md`.
+
+A topic is a long-lived document set, not a run. Inside it, each plan item is its own file, so it
+can be linked, reviewed and ordered on its own instead of being a `##` heading buried in one long
+document. Terminology stays in the overview, because it is a list of terms with paired `_Avoid_` —
+splitting those into files would break the pairing.
 
 The folder is built by writing the first file into it (`write` creates parents); `bash mkdir` is
 denied by the read-only gate in stage one. A topic folder is only created when asked for — via
 `--doc docs/topic/`, or a directory that already exists — so an existing flat `docs/foo.md`
 single-file topic keeps working and is never silently reinterpreted.
+
+### Decisions are not in the documents
+
+A decision is a **variable, not a constant**: one written into a document today is likely to be
+revisited after another round of questioning. A document is maintained for the long term, so
+freezing revisited reasoning into it means steadily manufacturing contradictions. A commit is a
+point-in-time snapshot, so it records *why it was decided then* without pretending the answer is
+final.
+
+So documents carry **results** — terms, goals, non-goals, risks, plan items — and the reasoning
+lives in the **git commit message**. There is no `docs/<topic>/decisions/` and no `docs/adr/`; the
+extension has no decision-recording tool, and `git log` is the decision history.
 
 Documents carry frontmatter (`title`, `status`, `topics`, `created`, `updated`, `approved`)
 that the extension maintains across stage transitions. `status` is `writing` while documents
@@ -99,12 +114,8 @@ nothing is archived, renamed, or dated — git holds the history. `docs/INDEX.md
 index; `/deep-plan-docs` lists the tree grouped by layout and whether the index exists.
 
 Entry files are plain prose — frontmatter belongs to the overview alone. `deep_plan_review`
-refuses to close stage one while any entry file is empty; it does not police sequence numbering,
-because the task list, not the file names, owns completeness.
-
-`docs/adr/` holds decisions that bind every topic; a topic's own `decisions/` holds what that topic
-decided. One decision filed in both places is drift, so `deep_plan_review` compares the entry files
-against the ADR bodies and refuses the pair — the boundary is checked, not just written down.
+refuses to close stage one while any plan entry file is empty; it does not police sequence
+numbering, because the task list, not the file names, owns completeness.
 
 ## The write gate
 

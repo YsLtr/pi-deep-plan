@@ -19,16 +19,6 @@ export const SCRATCH_SUBDIR = path.join(".pi", "tmp");
 /** Index of topics, so a plan can be routed to an existing document. */
 export const INDEX_BASENAME = "INDEX.md";
 
-export interface Decision {
-	/** Stable id, e.g. "D1". */
-	id: string;
-	title: string;
-	conclusion: string;
-	evidence: string;
-	confidence: "high" | "medium" | "low";
-	alternatives?: string;
-}
-
 export interface VariableDecision {
 	/** Stable id, e.g. "V1". */
 	id: string;
@@ -65,7 +55,6 @@ export interface PlanState {
 	planPath?: string;
 	/** Original request text that started the loop. */
 	goal?: string;
-	decisions: Decision[];
 	variables: VariableDecision[];
 	/** Structured execution tasks managed by deep_plan_task / deep_plan_step. */
 	tasks: PlanTask[];
@@ -86,7 +75,6 @@ export interface PlanState {
 export const INACTIVE: PlanState = {
 	active: false,
 	phase: "writing",
-	decisions: [],
 	variables: [],
 	tasks: [],
 	taskTitle: undefined,
@@ -160,17 +148,14 @@ export function resolveOverview(cwd: string, recorded: string): string {
 	return fs.existsSync(inTopic) ? inTopic : recorded;
 }
 
-/** Entry sub-folders inside a topic folder. One entry per file. */
-export const DECISIONS_SUBDIR = "decisions";
-export const PLAN_SUBDIR = "plan";
-export type EntryKind = typeof DECISIONS_SUBDIR | typeof PLAN_SUBDIR;
-
 /**
- * Where cross-topic hard decisions live. Kept separate from a topic's own `decisions/`: that
- * folder holds decisions belonging to one topic, this one holds decisions every topic answers to.
+ * Sub-folder holding a topic's plan entries — one independently verifiable item per file.
+ *
+ * `plan/` is the only entry kind. Decisions are deliberately not an entry kind: they change as a
+ * plan evolves, so they live in the git history rather than in a document that outlives them.
  */
-export const ADR_SUBDIR = "adr";
-
+export const PLAN_SUBDIR = "plan";
+export type EntryKind = typeof PLAN_SUBDIR;
 /**
  * The topic folder for a topic slug: `docs/<topic>/`.
  *
@@ -300,18 +285,18 @@ export function countDocs(cwd: string): number {
 }
 
 /**
- * Entry files of the topic that `overview` belongs to, at one level below the topic folder.
+ * Plan entry files of the topic that `overview` belongs to, one level below the topic folder.
  *
- * Only the two known entry kinds are walked, and only the topic folder the overview sits in, so
- * a single-file topic (`docs/foo.md`) yields nothing and a deeper tree is not swept. Missing
- * kind folders are normal — a topic with no decisions yet is a topic with no decisions.
+ * Only the known entry kind is walked, and only the topic folder the overview sits in, so a
+ * single-file topic (`docs/foo.md`) yields nothing and a deeper tree is not swept. A missing
+ * `plan/` is normal — a topic with no independent items yet has no plan entries.
  */
 export function listEntryFiles(cwd: string, overview: string): { label: string; path: string }[] {
 	const topicDir = path.dirname(overview);
 	if (path.resolve(topicDir) === path.resolve(docsDir(cwd))) return [];
 
 	const found: { label: string; path: string }[] = [];
-	for (const kind of [DECISIONS_SUBDIR, PLAN_SUBDIR] as const) {
+	for (const kind of [PLAN_SUBDIR] as const) {
 		const dir = path.join(topicDir, kind);
 		let names: string[];
 		try {
@@ -327,63 +312,6 @@ export function listEntryFiles(cwd: string, overview: string): { label: string; 
 	return found;
 }
 
-/**
- * Cross-topic ADR files, `docs/adr/*.md`.
- *
- * A topic's own decisions belong under that topic; only decisions every topic answers to belong
- * here. Returning the list lets a caller notice the same decision recorded in both places.
- */
-export function listAdrFiles(cwd: string): string[] {
-	const dir = path.join(docsDir(cwd), ADR_SUBDIR);
-	let names: string[];
-	try {
-		names = fs.readdirSync(dir);
-	} catch {
-		return [];
-	}
-	return names
-		.filter((n) => !n.startsWith(".") && n.endsWith(".md"))
-		.sort()
-		.map((n) => path.join(dir, n));
-}
-
-/**
- * Complaints about a decision recorded both inside its topic and in `docs/adr/`.
- *
- * A topic's `decisions/` holds what that topic decided; `docs/adr/` holds what every topic answers
- * to. Filing one decision in both means a later reader finds two copies that can drift apart, so
- * the pair is reported instead of leaving the boundary to convention alone.
- */
-export function crossPostedDecisions(cwd: string, overview: string): string[] {
-	const topicDecisions = listEntryFiles(cwd, overview).filter((e) =>
-		e.label.startsWith(`${DECISIONS_SUBDIR}/`),
-	);
-	if (topicDecisions.length === 0) return [];
-	const adrs = listAdrFiles(cwd);
-	if (adrs.length === 0) return [];
-
-	const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();
-	const read = (file: string): string => {
-		try {
-			return flatten(fs.readFileSync(file, "utf8"));
-		} catch {
-			return "";
-		}
-	};
-
-	const adrText = adrs.map(read).filter((t) => t !== "");
-	const problems: string[] = [];
-	for (const entry of topicDecisions) {
-		const own = read(entry.path);
-		if (own !== "" && adrText.some((t) => t.includes(own))) {
-			problems.push(
-				`决策在两处重复(${entry.label} 与 docs/${ADR_SUBDIR}/):` +
-					"话题自己的决策留在话题内,只有跨越所有话题的硬决策才进 docs/adr/。",
-			);
-		}
-	}
-	return problems;
-}
 
 export function resolveScratchDir(cwd: string): string {
 	const dir = path.join(cwd, SCRATCH_SUBDIR);
@@ -490,7 +418,6 @@ export function toPersisted(state: PlanState): PlanState {
 		phase: state.phase,
 		planPath: state.planPath,
 		goal: state.goal,
-		decisions: state.decisions,
 		variables: state.variables,
 		tasks: state.tasks,
 		taskTitle: state.taskTitle,
@@ -514,7 +441,6 @@ export function fromPersisted(data: unknown): PlanState | undefined {
 		phase,
 		planPath: typeof d.planPath === "string" ? d.planPath : undefined,
 		goal: typeof d.goal === "string" ? d.goal : undefined,
-		decisions: Array.isArray(d.decisions) ? (d.decisions as Decision[]) : [],
 		variables: Array.isArray(d.variables) ? (d.variables as VariableDecision[]) : [],
 		tasks: Array.isArray(d.tasks) ? (d.tasks as PlanTask[]) : [],
 		taskTitle: typeof d.taskTitle === "string" ? d.taskTitle : undefined,

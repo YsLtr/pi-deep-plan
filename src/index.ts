@@ -17,7 +17,6 @@ import {
 	INACTIVE,
 	collectAnchors,
 	countDocs,
-	crossPostedDecisions,
 	extractWriteTarget,
 	fromPersisted,
 	isDocPath,
@@ -31,7 +30,6 @@ import {
 	resolveScratchDir,
 	stateEntryType,
 	toPersisted,
-	type Decision,
 	type Phase,
 	type PlanState,
 	type VariableDecision,
@@ -97,7 +95,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		lines.push(`phase: ${state.phase}`);
 		if (state.goal !== undefined) lines.push(`goal: ${state.goal}`);
 		if (state.planPath !== undefined) lines.push(`plan: ${state.planPath}`);
-		lines.push(`decisions: ${state.decisions.length}, variables: ${state.variables.length}`);
+		lines.push(`variables: ${state.variables.length}`);
 		return lines.join("\n");
 	}
 
@@ -235,10 +233,11 @@ export default function deepPlan(pi: ExtensionAPI): void {
 							: "",
 						"",
 						"纪律:",
-						"1. 自问自答:建设计树,每个 frontier 问题自己给推荐答案,绝不问用户。",
+						"1. 自问自答:建设计树,每个 frontier 问题**先写出现,再写出你的推荐答案**,绝不问用户。",
 						"2. 事实派子代理查(researcher/scout),不等、不猜、不问用户。",
-						"3. 每条决策用 deep_plan_record_decision 记录(附证据与置信度)。",
-						"4. 用户可能有不同偏好的项,用 deep_plan_record_variable 记录(必须带已生效的默认值)。",
+						"3. 用户可能有不同偏好的项,用 deep_plan_record_variable 记录(必须带已生效的默认值)。",
+						"4. 文档只留**结果**:术语、目标 / 非目标、风险、计划。**不要写决策记录** ——",
+						"   「为什么这么定」写进 git commit message,因为决策是变值,会改。",
 						"5. 文档写给未来的读者,不是写给这一次的执行。",
 						"",
 						"文档怎么写(重要):",
@@ -246,12 +245,13 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"- **不要写一次性计划表或待办清单。** 文档是长期维护的项目开发文档。",
 						"- 维护完整:没有留白、没有 TBD、不与文档其余部分或现有 docs/ 相互矛盾。",
 						"- 已有的目标文档要**就地完善**(改、补、删),不要新建一份平行文档。",
-						"- 话题是文件夹:总纲 `docs/<topic>/<topic>.md`,决策 `docs/<topic>/decisions/NNNN-<slug>.md`,",
-						"  计划条目 `docs/<topic>/plan/NNNN-<slug>.md`。一个文件一个条目,不要塞回总纲的子标题。",
+						"- 话题是文件夹:总纲 `docs/<topic>/<topic>.md`,计划条目 `docs/<topic>/plan/NNNN-<slug>.md`。",
+						"  一个文件一个条目,不要塞回总纲的子标题。",
+						"- **不写决策记录、不建 decisions/、不建 docs/adr/。** 决策是变值,会改;",
+						"  「为什么这么定」写进 git commit message。文档只留结果:术语 / 目标与非目标 / 风险 / 计划。",
 						"- 建话题文件夹用 write 写第一个文件(write 会自动建父目录);**不要用 bash mkdir**,",
 						"  它被写作阶段的只读门禁拒绝,试图绕过同样会被拦。",
-						"- 术语放进总纲自己的术语小节(格式见 domain-modeling 的 CONTEXT-FORMAT.md);",
-						"  够得上 ADR 的硬决策写进总纲的决策小节(格式见 ADR-FORMAT.md)。",
+						"- 术语放进总纲自己的术语小节。",
 						"- 新增或新开话题时,同步更新 docs/INDEX.md(一行一个话题,指向它的总纲)。",
 						"- 改已有文档请用 write 整篇覆盖,或带上 path 的按行编辑。",
 						"",
@@ -344,7 +344,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				phase: "writing",
 				planPath,
 				goal,
-				decisions: [],
 				variables: [],
 				tasks: [],
 				scratchAllow: true,
@@ -451,7 +450,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				phase: "writing",
 				planPath,
 				goal: params.goal,
-				decisions: [],
 				variables: [],
 				tasks: [],
 				scratchAllow: true,
@@ -477,39 +475,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerTool({
-		name: "deep_plan_record_decision",
-		label: "Record Decision",
-		description:
-			"记录一条自问自答得到的设计决策。每条决策必须带证据(文件路径:行号 或 URL)与置信度。低置信度的决策同时要用 deep_plan_record_variable 暴露给用户。",
-		promptSnippet: "Record one self-answered design decision with evidence",
-		parameters: Type.Object({
-			title: Type.String({ description: "决策标题" }),
-			conclusion: Type.String({ description: "选定的做法" }),
-			evidence: Type.String({ description: "证据:文件路径:行号 或 URL" }),
-			confidence: Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")], {
-				description: "置信度",
-			}),
-			alternatives: Type.Optional(Type.String({ description: "被否决的备选方案与理由" })),
-		}),
-		async execute(_id, params, _signal, _onUpdate, _ctx) {
-			requireActive();
-			const decision: Decision = {
-				id: `D${state.decisions.length + 1}`,
-				title: params.title,
-				conclusion: params.conclusion,
-				evidence: params.evidence,
-				confidence: params.confidence,
-				alternatives: params.alternatives,
-			};
-			state.decisions.push(decision);
-			persist();
-			return {
-				content: [{ type: "text", text: `已记录 ${decision.id}: ${decision.title}` }],
-				details: undefined,
-			};
-		},
-	});
 
 	pi.registerTool({
 		name: "deep_plan_record_variable",
@@ -580,7 +545,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			if (s.variables.length > 8) {
 				problems.push(`可变决策有 ${s.variables.length} 条(要求 3-8 条):应当拆分为多个文档。`);
 			}
-			if (s.decisions.length === 0) problems.push("没有记录任何决策(deep_plan_record_decision)。");
 			if (s.tasks.length === 0) {
 				problems.push("没有任务拆解(deep_plan_task action=add):执行阶段需要可独立验收的任务。");
 			}
@@ -597,9 +561,6 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				}
 				if (bodyOf(entryBody) === "") problems.push(`条目文件是空的(${label}): ${file}`);
 			}
-			// A decision belongs in one place: inside its topic, or in docs/adr/ when it binds every
-			// topic. The same decision in both is the drift the split exists to prevent.
-			problems.push(...crossPostedDecisions(ctx.cwd, s.planPath));
 			if (problems.length > 0) {
 				return {
 					content: [{ type: "text", text: `文档阶段未达收尾条件:\n- ${problems.join("\n- ")}` }],

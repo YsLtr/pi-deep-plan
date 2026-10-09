@@ -8,7 +8,6 @@ import * as path from "node:path";
 import {
 	FILE_MUTATION_TOOLS,
 	collectAnchors,
-	crossPostedDecisions,
 	entryPath,
 	INACTIVE,
 	extractWriteTarget,
@@ -49,15 +48,12 @@ test("planLink keeps non-ascii hrefs percent-decoded", () => {
 	assert.ok(!link.includes("%"), link);
 });
 
-// A topic is a folder, and its entries are files in it: one decision per file, one plan entry
-// per file. The zero-padded sequence is what makes the file system list them in order.
-test("entryPath names one entry file per decision and per plan item", () => {
+// A topic is a folder, and each plan item is a file in it. The zero-padded sequence is what
+// makes the file system list them in order. `plan/` is the only entry kind: decisions change, so
+// they live in the git history instead of a document that outlives them.
+test("entryPath names one file per plan item", () => {
 	const cwd = path.resolve("/repo");
 	assert.equal(planDir(cwd, "x-topic"), path.join(cwd, "docs", "x-topic"));
-	assert.equal(
-		entryPath(cwd, "x-topic", "decisions", "pick-a-store", 3),
-		path.join(cwd, "docs", "x-topic", "decisions", "0003-pick-a-store.md"),
-	);
 	assert.equal(
 		entryPath(cwd, "x-topic", "plan", "wire-the-gate", 1),
 		path.join(cwd, "docs", "x-topic", "plan", "0001-wire-the-gate.md"),
@@ -127,7 +123,6 @@ test("isWriteAllowed scopes each stage to its own side of docs/", () => {
 	// The topic-folder layout: overview, and entries one level deeper still.
 	assert.ok(isWriteAllowed(state, path.join(docs, "x-topic/x-topic.md"), cwd));
 	assert.ok(isWriteAllowed(state, path.join(docs, "x-topic/plan/0001-a.md"), cwd));
-	assert.ok(isWriteAllowed(state, path.join(docs, "x-topic/decisions/0001-b.md"), cwd));
 	assert.ok(isWriteAllowed(state, path.join(cwd, ".pi/tmp/report.md"), cwd));
 	assert.ok(!isWriteAllowed(state, src, cwd));
 	assert.ok(!isWriteAllowed(state, path.join(cwd, "README.md"), cwd));
@@ -229,37 +224,3 @@ test("resolveOverview follows a topic that moved into its folder", () => {
 	}
 });
 
-// A decision lives in its topic, or in docs/adr/ when it binds every topic — not both. Two
-// copies of one decision can drift apart, so the duplicate pair is reported.
-test("crossPostedDecisions flags a decision filed in both places", () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dp-cross-"));
-	try {
-		const topicDir = path.join(cwd, "docs", "x-topic");
-		const decisions = path.join(topicDir, "decisions");
-		const adrDir = path.join(cwd, "docs", "adr");
-		fs.mkdirSync(decisions, { recursive: true });
-		fs.mkdirSync(adrDir, { recursive: true });
-		const overview = path.join(topicDir, "x-topic.md");
-		fs.writeFileSync(overview, "# Topic\n", "utf8");
-
-		const own = "用 JSON 而不是 XML。\n";
-		fs.writeFileSync(path.join(decisions, "0001-use-json.md"), own, "utf8");
-
-		// No ADRs yet: a topic decision on its own is fine.
-		assert.deepEqual(crossPostedDecisions(cwd, overview), []);
-		// An unrelated ADR is fine too — the folders are allowed to coexist.
-		fs.writeFileSync(path.join(adrDir, "0001-monorepo.md"), "Keep it a monorepo.\n", "utf8");
-		assert.deepEqual(crossPostedDecisions(cwd, overview), []);
-		// The same decision in both is reported, naming the duplicate.
-		fs.writeFileSync(path.join(adrDir, "0002-also-json.md"), `# dup\n\n${own}`, "utf8");
-		const found = crossPostedDecisions(cwd, overview);
-		assert.equal(found.length, 1);
-		assert.match(found[0]!, /decisions\/0001-use-json\.md/);
-		// A single-file topic has no decisions folder, so there is nothing to duplicate.
-		const flat = path.join(cwd, "docs", "flat.md");
-		fs.writeFileSync(flat, "# flat\n", "utf8");
-		assert.deepEqual(crossPostedDecisions(cwd, flat), []);
-	} finally {
-		fs.rmSync(cwd, { recursive: true, force: true });
-	}
-});

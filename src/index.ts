@@ -8,6 +8,7 @@
  *   - one-shot review gate with explicit approval before execution
  */
 
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -15,12 +16,15 @@ import {
 	FILE_MUTATION_TOOLS,
 	INACTIVE,
 	collectAnchors,
-	countTopLevelPlans,
+	countDocs,
 	extractWriteTarget,
 	fromPersisted,
+	isDocPath,
 	isWriteAllowed,
+	indexFile,
+	listDocs,
 	planLink,
-	resolvePlanPath,
+	resolveDocPath,
 	resolveScratchDir,
 	stateEntryType,
 	toPersisted,
@@ -31,13 +35,7 @@ import {
 } from "./state.ts";
 import { readOnlyVerdict } from "./readonly.ts";
 import { progressOf, registerTaskTools, renderTaskLines } from "./tasks.ts";
-import {
-	applyGc,
-	archivePlan,
-	isoDate,
-	scanPlans,
-	stampPlanFile,
-} from "./archive.ts";
+import { bodyOf, isoDate, stampDoc } from "./archive.ts";
 
 const WIDGET_KEY = "deep-plan";
 const STATUS_KEY = "deep-plan";
@@ -56,16 +54,13 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		const p = progressOf(state.tasks);
 		const progress = state.tasks.length > 0 ? ` ${p.done}/${p.total}` : "";
 		const label =
-			state.phase === "planning"
-				? ctx.ui.theme.fg("warning", `◐ deep-plan: 规划中 (写保护)${progress}`)
-				: state.phase === "review"
-					? ctx.ui.theme.fg("accent", `◑ deep-plan: 待审查 (写保护)${progress}`)
-					: ctx.ui.theme.fg("success", `▶ deep-plan: 执行中${progress}`);
+			state.phase === "writing"
+				? ctx.ui.theme.fg("warning", `◐ deep-plan: 文档阶段 (仅 docs/ 可写)${progress}`)
+				: ctx.ui.theme.fg("success", `▶ deep-plan: 执行阶段 (docs/ 冻结)${progress}`);
 		ctx.ui.setStatus(STATUS_KEY, label);
 
-		// Task panel: visible from review onward so the user sees the decomposition
-		// they are being asked to approve, then live progress during execution.
-		if (state.tasks.length > 0 && state.phase !== "planning") {
+		// Task panel: shown once execution is under way, where step progress is the point.
+		if (state.tasks.length > 0 && state.phase === "executing") {
 			try {
 				const header = ctx.ui.theme.fg("muted", state.taskTitle ?? "任务清单");
 				ctx.ui.setWidget(WIDGET_KEY, [header, ...renderTaskLines(state.tasks, ctx.ui.theme)]);
@@ -84,6 +79,14 @@ export default function deepPlan(pi: ExtensionAPI): void {
 	function requireActive(): PlanState {
 		if (!state.active) throw new Error("deep-plan 未启动。先用 deep_plan_start 开始一次规划。");
 		return state;
+	}
+
+	function fileExists(target: string): boolean {
+		try {
+			return fsSync.statSync(target).isFile();
+		} catch {
+			return false;
+		}
 	}
 
 	function summary(): string {
@@ -149,11 +152,10 @@ export default function deepPlan(pi: ExtensionAPI): void {
 
 
 	pi.on("tool_call", async (event, ctx) => {
-		// Only live state gates. `deep_plan_start` is no longer armed mid-batch: the
-		// command entry point sets state before any model run, so there is no window in
-		// which a sibling write could ride along behind the start call.
-		const gated = state.active && state.phase !== "executing";
-		if (!gated) return;
+		// The file gate runs in both stages: stage one allows only `docs/`, stage two only the
+		// repository. Keeping it armed during execution is what freezes the documents, which is
+		// what keeps the doc commit and the code commit from ever overlapping.
+		if (!state.active) return;
 		if (FILE_MUTATION_TOOLS.has(event.toolName)) {
 			const target = extractWriteTarget(event.toolName, event.input as Record<string, unknown>, planTargetFor);
 			if (target === undefined) {
@@ -161,8 +163,8 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					block: true,
 					reason:
 						`deep-plan 写保护:${event.toolName} 的目标路径无法确定,已阻止。` +
-						`\n当前只允许写方案文档: ${state.planPath ?? "(未分配)"}` +
-						`\n需要进入执行阶段请调用 deep_plan_approve。`,
+						`\n文档阶段只允许写 docs/ 下的文档;执行阶段只允许写 docs/ 外的仓库文件。` +
+						`\n当前文档: ${state.planPath ?? "(未指定)"}`
 				};
 			}
 			if (target === "") {
@@ -173,24 +175,26 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					block: true,
 					reason:
 						`deep-plan 写保护:${event.toolName} 的锚点无法定位到文件,已阻止。` +
-						`\n当前只允许写方案文档: ${state.planPath ?? "(未分配)"}` +
-						`\n(先 read 目标文件让锚点可解析,或改用 write 整篇覆盖)` +
-						`\n批准执行请调用 deep_plan_approve。`,
+						`\n(先 read 目标文件让锚点可解析,或改用 write 整篇覆盖)`,
 				};
 			}
 			if (!isWriteAllowed(state, target, ctx.cwd)) {
 				return {
 					block: true,
 					reason:
-						`deep-plan 写保护:规划阶段不得修改工作区文件。\n被阻止: ${target}` +
-						`\n唯一允许写的是方案文档: ${state.planPath ?? "(未分配)"}` +
-						`\n(子代理报告可写 .pi/tmp/ 下的 scratch 文件)` +
-						`\n批准执行请调用 deep_plan_approve。`,
+						(state.phase === "writing"
+							? `deep-plan 文档阶段:只能修改 docs/ 下的文档。\n被阻止: ${target}` +
+								`\n(子代理报告可写 .pi/tmp/ 下的 scratch 文件)`
+							: `deep-plan 执行阶段:docs/ 已冻结,随文档一起提交。\n被阻止: ${target}` +
+								`\n要改文档请用 deep_plan_revise 回到文档阶段。`),
 				};
 			}
 			return;
 		}
 
+		// Shell restriction is a documentation-stage rule: the point of stage one is that
+		// nothing changes but the documents, and `git commit` is included in that "nothing".
+		if (state.phase === "executing") return;
 		if (event.toolName === "bash" || event.toolName === "powershell") {
 			const command = (event.input as Record<string, unknown>).command;
 			if (typeof command !== "string") return;
@@ -199,9 +203,8 @@ export default function deepPlan(pi: ExtensionAPI): void {
 				return {
 					block: true,
 					reason:
-						`deep-plan 写保护:规划阶段只允许只读命令。\n被阻止: ${command}` +
-						`\n原因: ${verdict.reason}` +
-						`\n批准执行请调用 deep_plan_approve。`,
+						`deep-plan 文档阶段:只允许只读命令(改动交给 git 与编辑器)。\n被阻止: ${command}` +
+						`\n原因: ${verdict.reason}`,
 				};
 			}
 		}
@@ -211,17 +214,18 @@ export default function deepPlan(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!state.active) return;
-		if (state.phase === "planning") {
+		if (state.phase === "writing") {
 			return {
 				message: {
 					customType: "deep-plan-context",
 					display: false,
 					content: [
-						"[DEEP PLAN ACTIVE — 规划阶段]",
-						"HARD GATE: 编辑器工具只能写方案文档,其余写入会被 harness 拦截;",
-						"bash/powershell 只允许只读命令;`.pi/tmp/` 供子代理报告。不要尝试绕过。",
+						"[DEEP PLAN — 第一阶段:文档]",
+						"范围: 只有 docs/ 下的文档可写(以及 .pi/tmp/ 的 scratch)。仓库代码、README、AGENTS.md 都不可写。",
+						"bash/powershell 只允许只读命令。不要尝试绕过。",
 						"",
-						`方案文档(唯一可写文件): ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(调用 deep_plan_start 分配)"}`,
+						`本次文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(未指定)"}`,
+						`docs/ 现有文档(${countDocs(ctx.cwd)}): ${listDocs(ctx.cwd).slice(0, 20).join(", ") || "(空)"}`,
 						state.goal !== undefined ? `目标: ${state.goal}` : "",
 						"",
 						"纪律:",
@@ -229,32 +233,23 @@ export default function deepPlan(pi: ExtensionAPI): void {
 						"2. 事实派子代理查(researcher/scout),不等、不猜、不问用户。",
 						"3. 每条决策用 deep_plan_record_decision 记录(附证据与置信度)。",
 						"4. 用户可能有不同偏好的项,用 deep_plan_record_variable 记录(必须带已生效的默认值)。",
-						"5. 写方案文档 → deep_plan_review 提交审查。",
-						"6. 审查后停住,等批准。批准后 deep_plan_approve 解锁并执行。",
+						"5. 文档写给未来的读者,不是写给这一次的执行。",
 						"",
-						"domain-modeling 的产物在规划阶段**只能写进方案文档**,写仓库的 CONTEXT.md / docs/adr/ 会被门禁拦截:",
-						"- 术语与领域模型 → 方案文档的「术语与领域模型」一节(格式见 CONTEXT-FORMAT.md)",
-						"- 够得上 ADR 的硬决策 → 「决策记录」里带 ADR 语义的那条(格式见 ADR-FORMAT.md)",
-						"- 真正落盘到 CONTEXT.md / docs/adr/ 是 P5 执行阶段的任务,拆进任务清单",
-						"- 局部改写方案文档请用 write 整篇覆盖(带 path 的按行编辑才可判定)",
+						"文档怎么写(重要):",
+						"- **不要写按日期排布的变化记录。** 变化由 git 记录,git diff 就是本次计划。",
+						"- **不要写一次性计划表或待办清单。** 文档是长期维护的项目开发文档。",
+						"- 维护完整:没有留白、没有 TBD、不与文档其余部分或现有 docs/ 相互矛盾。",
+						"- 已有的目标文档要**就地完善**(改、补、删),不要新建一份平行文档。",
+						"- 主题需要新文档时,在 docs/ 下新建,并同步更新 docs/INDEX.md 的索引。",
+						"- 术语放进文档自己的术语小节(格式见 domain-modeling 的 CONTEXT-FORMAT.md);",
+						"  够得上 ADR 的硬决策写进文档的决策小节(格式见 ADR-FORMAT.md)。",
+						"- 改已有文档请用 write 整篇覆盖,或带上 path 的按行编辑。",
+						"",
+						"收尾: 先 deep_plan_task 把执行阶段要做的事拆成可独立验收的任务,",
+						"再调 deep_plan_review。提交审查前确保文档已写完 —— 之后文档会被冻结。",
 					]
 						.filter((l) => l !== "")
 						.join("\n"),
-				},
-			};
-		}
-		if (state.phase === "review") {
-			return {
-				message: {
-					customType: "deep-plan-context",
-					display: false,
-					content:
-						"[DEEP PLAN ACTIVE — 待审查]\n" +
-						"方案已提交。现在只做一件事:向用户呈现方案文档路径 + 可变决策表全文 + 任务清单," +
-						"给出三个选项(批准执行 / 修改可变决策 / 打回重做),然后停住等回话。\n" +
-						"**不要把方案正文贴进对话** —— 正文只存在于文档里,已写过一次就够了。\n" +
-						"方案文档一律写成 markdown 链接(形如 [docs/plans/x.md](file:///C:/repo/docs/plans/x.md)),纯路径或反引号在终端里点不开。\n" +
-						"不要开始实现,不要修改任何文件。",
 				},
 			};
 		}
@@ -262,10 +257,20 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			message: {
 				customType: "deep-plan-context",
 				display: false,
-				content:
-					"[DEEP PLAN — 执行阶段]\n方案已批准,写保护已解除,可正常使用全部工具。\n" +
-					"按方案的执行步骤推进,每步做完对照验收方式确认;" +
-					"若新决策改变了已批准范围,停下来重新走审查。",
+				content: [
+					"[DEEP PLAN — 第二阶段:执行]",
+					"文档阶段已结束,`docs/` 已冻结 —— 文档改动要与代码分开提交,所以这里不再改文档。",
+					"仓库其余部分可正常写,全部工具可用。",
+					"",
+					`已定稿的文档: ${state.planPath !== undefined ? planLink(ctx.cwd, state.planPath) : "(未指定)"}`,
+					"",
+					"1. 按 deep_plan_task 定下的任务逐条推进,每条做完对照验收方式确认。",
+					"2. **提交只针对仓库代码。** 文档改动属于第一阶段的提交,不要混进代码提交里。",
+					"3. 文档若发现需要改,调 deep_plan_revise 回到文档阶段,改完重新审查。",
+					"4. 全部完成后调 deep_plan_finish 收尾。",
+				]
+					.filter((l) => l !== "")
+					.join("\n"),
 			},
 		};
 	});
@@ -273,11 +278,21 @@ export default function deepPlan(pi: ExtensionAPI): void {
 	// ------------------------------------------------------------- commands
 
 	pi.registerCommand("deep-plan", {
-		description: "开始一次自主规划(deep-plan):自问自答 + 自派子代理查证 + 单一审查",
+		description:
+			"开始一次 deep-plan:第一阶段完善文档(仅 docs/ 可写),提交文档后第二阶段执行代码",
 		handler: async (args, ctx) => {
-			const goal = (args ?? "").trim();
+			// `--doc <path>` routes the run to a specific document; without it the goal's
+			// slug names the file, so the same topic reuses the same document.
+			const raw = (args ?? "").trim();
+			const docMatch = /--doc(?:=|\s+)(\S+)/.exec(raw);
+			const requestedDoc = docMatch?.[1];
+			const goal = raw.replace(/--doc(?:=|\s+)\S+/, "").trim();
 			if (goal === "") {
-				ctx.ui.notify("用法: /deep-plan <要规划的目标>", "warning");
+				ctx.ui.notify(
+					"用法: /deep-plan <要规划的目标> [--doc docs/<路径>.md]\n" +
+						"不带 --doc 时,按目标的 slug 定位 docs/<slug>.md。",
+					"warning",
+				);
 				return;
 			}
 			if (state.active) {
@@ -292,10 +307,16 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					return;
 				}
 			}
-			const planPath = resolvePlanPath(ctx.cwd, goal);
+			let planPath: string;
+			try {
+				planPath = resolveDocPath(ctx.cwd, goal, requestedDoc);
+			} catch (error) {
+				ctx.ui.notify(String(error instanceof Error ? error.message : error), "warning");
+				return;
+			}
 			state = {
 				active: true,
-				phase: "planning",
+				phase: "writing",
 				planPath,
 				goal,
 				decisions: [],
@@ -306,17 +327,17 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			};
 			persist();
 			sync(ctx);
-			const leftovers = countTopLevelPlans(ctx.cwd);
+			const existing = state.planPath !== undefined && fileExists(planPath);
 			ctx.ui.notify(
-				`deep-plan 已启动,写保护生效。\n方案文档: ${planPath}` +
-					(leftovers > 1
-						? `\n注意: docs/plans/ 顶层还有 ${leftovers - 1} 个旧方案,可用 /deep-plan-gc 归档。`
-						: ""),
+				`deep-plan 已启动 — 第一阶段:文档(仅 docs/ 可写)。\n` +
+					`${existing ? "完善已有文档" : "新建文档"}: ${planPath}\n` +
+					`docs/ 现有文档 ${countDocs(ctx.cwd)} 份。\n` +
+					`文档写完并提交后,再进入执行阶段 —— 两段提交是分开的。`,
 				"info",
 			);
 			// One line only: state and every discipline live in the before_agent_start
 			// injection, so nothing here duplicates what the hook says.
-			pi.sendUserMessage(`开始 deep-plan 规划。目标:${goal}`);
+			pi.sendUserMessage(`开始 deep-plan。目标:${goal}`);
 		},
 	});
 
@@ -337,81 +358,39 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("deep-plan-gc", {
-		description: "归档 docs/plans/ 中已完成/已放弃的旧方案,使顶层只留活跃(默认保留 30 天)",
-		handler: async (args, ctx) => {
-			// Args: [days] [apply] — "apply" skips the confirmation prompt.
-			const tokens = (args ?? "").trim().split(/\s+/).filter((t) => t !== "");
-			const force = tokens.some((t) => t.toLowerCase() === "apply");
-			const dayToken = tokens.find((t) => /^\d+$/.test(t));
-			const badToken = tokens.find((t) => t.toLowerCase() !== "apply" && !/^\d+$/.test(t));
-			if (badToken !== undefined) {
-				ctx.ui.notify(`无法识别的参数: ${badToken}。用法: /deep-plan-gc [天数] [apply]`, "warning");
+	pi.registerCommand("deep-plan-docs", {
+		description: "列出 docs/ 下的文档与索引状态(不触发模型调用)",
+		handler: async (_args, ctx) => {
+			const docs = listDocs(ctx.cwd);
+			if (docs.length === 0) {
+				ctx.ui.notify("docs/ 下还没有文档。用 /deep-plan <目标> 开始。", "info");
 				return;
 			}
-			const retentionDays = dayToken === undefined ? 30 : Number(dayToken);
-
-			const entries = await scanPlans(ctx.cwd, { retentionDays });
-			if (entries.length === 0) {
-				ctx.ui.notify(`docs/plans/ 顶层没有方案文档。`, "info");
-				return;
-			}
-
-			const preview = entries
-				.map((e) => `${e.eligible ? "→ 归档" : "  保留"}  ${path.basename(e.filePath)}  [${e.status}]  ${e.ageDays}天  ${e.reason}`)
-				.join("\n");
-			const eligible = entries.filter((e) => e.eligible);
-
-			if (eligible.length === 0) {
-				ctx.ui.notify(`没有需要归档的方案(阈值 ${retentionDays} 天):\n\n${preview}`, "info");
-				return;
-			}
-
-			// Never mutate without a yes: no UI means dry-run unless "apply" was passed.
-			if (!force) {
-				if (!ctx.hasUI) {
-					ctx.ui.notify(
-						`[dry-run] 将归档 ${eligible.length} 个方案:\n\n${preview}` +
-							`\n\n当前无交互 UI,未改动任何文件。`,
-						"info",
-					);
-					return;
-				}
-				const ok = await ctx.ui.confirm(
-					`归档 ${eligible.length} 个方案?`,
-					`将移动到 docs/plans/archive/<年>/(不删除):\n\n${preview}`,
-				);
-				if (ok !== true) {
-					ctx.ui.notify("已取消,未改动任何文件。", "info");
-					return;
-				}
-			}
-
-			const result = await applyGc(entries);
-			const failed = result.failed.map((f) => `  ${path.basename(f.filePath)}: ${f.error}`).join("\n");
+			const index = indexFile(ctx.cwd);
+			const hasIndex = fileExists(index);
 			ctx.ui.notify(
-				[
-					`已归档 ${result.archived.length} 个,保留 ${result.kept} 个。`,
-					...result.archived.map((a) => `  → ${a}`),
-					failed !== "" ? `失败:\n${failed}` : "",
-				]
-					.filter((l) => l !== "")
-					.join("\n"),
-				result.failed.length > 0 ? "warning" : "info",
+				`docs/ 下 ${docs.length} 份文档:\n${docs.map((d) => `  ${d}`).join("\n")}` +
+					`\n\n索引 ${hasIndex ? "存在" : "缺失"}: ${path.relative(ctx.cwd, index)}` +
+					(hasIndex ? "" : "\n(规划时要求模型同步维护索引)"),
+				hasIndex ? "info" : "warning",
 			);
 		},
 	});
 
 	// ---------------------------------------------------------------- tools
 
+
 	pi.registerTool({
 		name: "deep_plan_start",
 		label: "Start Deep Plan",
 		description:
-			"启动一次 deep-plan:分配方案文档路径并开启硬写保护。仅在用户要求规划但命令入口不可用时使用;正常入口是 /deep-plan <目标>。",
-		promptSnippet: "Start a deep-plan loop with hard write protection",
+			"启动一次 deep-plan:第一阶段只写 docs/ 下的文档。仅在用户要求规划但命令入口不可用时使用;正常入口是 /deep-plan <目标> [--doc <路径>]。",
+		promptSnippet: "Start the deep-plan documentation stage (docs/ only)",
 		parameters: Type.Object({
 			goal: Type.String({ description: "要规划的目标,一句话" }),
+			doc: Type.Optional(
+				Type.String({ description: "目标文档路径(docs/ 下)。省略时按目标的 slug 定位。" }),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (state.active) {
@@ -420,11 +399,18 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					details: undefined,
 				};
 			}
-			const planPath = resolvePlanPath(ctx.cwd, params.goal);
-			// Real state now owns the gate for every later call.
+			let planPath: string;
+			try {
+				planPath = resolveDocPath(ctx.cwd, params.goal, params.doc);
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: String(error instanceof Error ? error.message : error) }],
+					details: undefined,
+				};
+			}
 			state = {
 				active: true,
-				phase: "planning",
+				phase: "writing",
 				planPath,
 				goal: params.goal,
 				decisions: [],
@@ -440,10 +426,11 @@ export default function deepPlan(pi: ExtensionAPI): void {
 					{
 						type: "text",
 						text: [
-							"deep-plan 已启动,硬写保护生效。",
-							`方案文档(唯一可写文件): ${planPath}`,
-							`scratch 目录: ${resolveScratchDir(ctx.cwd)}`,
-							"现在开始 P1:自问自答建设计树,不要问用户。",
+							"deep-plan 已启动 — 第一阶段:文档。",
+							`本次文档: ${planPath}`,
+							`可写范围: docs/ 下任意文档 + .pi/tmp/ 的 scratch`,
+							`docs/ 现有文档: ${listDocs(ctx.cwd).join(", ") || "(空)"}`,
+							"开始自问自答建设计树,不要问用户。",
 						].join("\n"),
 					},
 				],
@@ -522,74 +509,73 @@ export default function deepPlan(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "deep_plan_review",
-		label: "Submit Plan For Review",
+		label: "Finish Documentation Stage",
 		description:
-			"提交方案进入审查阶段。会校验方案文档存在且非空、可变决策表在 3-8 条之间。提交后进入 review 阶段,写保护仍然生效。",
-		promptSnippet: "Submit the written plan for the single user review",
+			"第一阶段收尾:校验文档已写完,并给出只提交文档的 git 边界。提交后进入审查,由用户决定是否批准执行。",
+		promptSnippet: "Close the documentation stage and hand the plan to the user",
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const s = requireActive();
-			if (s.phase !== "planning") {
+			if (s.phase !== "writing") {
 				return {
-					content: [{ type: "text", text: `当前阶段是 ${s.phase},不能重复提交审查。` }],
+					content: [{ type: "text", text: `当前阶段是 ${s.phase},文档阶段已收尾。` }],
 					details: undefined,
 				};
 			}
-			if (s.planPath === undefined) throw new Error("方案文档路径未分配");
-			let body = "";
+			if (s.planPath === undefined) throw new Error("文档路径未分配");
 			const fs = await import("node:fs/promises");
+			let body = "";
 			try {
 				body = await fs.readFile(s.planPath, "utf8");
 			} catch (error) {
-				throw new Error(`无法读取方案文档 ${s.planPath}: ${String(error)}`);
+				throw new Error(`无法读取文档 ${s.planPath}: ${String(error)}`);
 			}
-			if (body.trim() === "") throw new Error(`方案文档为空: ${s.planPath}`);
+			if (bodyOf(body) === "") throw new Error(`文档正文为空(只有 frontmatter): ${s.planPath}`);
 
 			const problems: string[] = [];
 			if (s.variables.length < 3) {
 				problems.push(`可变决策只有 ${s.variables.length} 条(要求 3-8 条):自问深度不足。`);
 			}
 			if (s.variables.length > 8) {
-				problems.push(`可变决策有 ${s.variables.length} 条(要求 3-8 条):应当拆分为多个方案。`);
+				problems.push(`可变决策有 ${s.variables.length} 条(要求 3-8 条):应当拆分为多个文档。`);
 			}
 			if (s.decisions.length === 0) problems.push("没有记录任何决策(deep_plan_record_decision)。");
 			if (s.tasks.length === 0) {
-				problems.push("没有任务拆解(deep_plan_task action=add)。方案必须拆成可独立验收的任务。");
+				problems.push("没有任务拆解(deep_plan_task action=add):执行阶段需要可独立验收的任务。");
 			}
 			if (problems.length > 0) {
 				return {
-					content: [{ type: "text", text: `方案未达审查条件:\n- ${problems.join("\n- ")}` }],
+					content: [{ type: "text", text: `文档阶段未达收尾条件:\n- ${problems.join("\n- ")}` }],
 					details: undefined,
 				};
 			}
 
-			// Stamp lifecycle metadata the moment the plan becomes reviewable.
-			await stampPlanFile(s.planPath, {
+			await stampDoc(s.planPath, {
 				title: s.taskTitle ?? s.goal,
-				status: "review",
-				created: isoDate(s.startedAt !== undefined ? new Date(s.startedAt) : new Date()),
-				session: ctx.sessionManager.getSessionId(),
+				updated: isoDate(),
 			});
-			setPhase("review", ctx);
+			persist();
+			sync(ctx);
 			const table = s.variables.map((v) => `| ${v.id} | ${v.item} | **${v.defaultValue}** | ${v.evidence} | ${v.cost} |`).join("\n");
 			return {
 				content: [
 					{
 						type: "text",
 						text: [
-							`方案已提交审查: ${planLink(ctx.cwd, s.planPath)}`,
+							`文档阶段完成: ${planLink(ctx.cwd, s.planPath)}`,
 							"",
 							"可变决策表:",
 							"| # | 决策项 | 默认值 | 依据 | 改动代价 |",
 							"|---|--------|--------|------|----------|",
 							table,
 							"",
-							`任务清单 (${s.taskTitle ?? "未命名"}) — 进度 ${progressOf(s.tasks).done}/${progressOf(s.tasks).total}:`,
-							...s.tasks.map((t) => `  ${t.id} [${t.status}] ${t.title}`),
-							"现在向用户呈现:上面的方案文档路径 + 上表 + 任务清单,给出三个选项",
-							"(批准执行 / 修改可变决策 / 打回重做),然后停住等回话。",
-							"不要把方案正文贴进对话 —— 正文只存在于文档里,用户自己打开看。",
-							"方案文档路径请把上面的 markdown 链接原样写进回复(可点击),不要改成反引号或纯路径。",
+							`执行阶段任务 (${s.taskTitle ?? "未命名"}) — ${progressOf(s.tasks).total} 条:`,
+							...s.tasks.map((t) => `  ${t.id} ${t.title}`),
+							"",
+							"现在向用户呈现:文档路径 + 上表 + 任务清单,并说明接下来的两步:",
+							"1) **先只提交文档**(示例: `git add docs/ && git commit -m \"docs: ...\"`)—— 这一步由用户执行。",
+							"2) 提交完成后,再问是否批准进入执行阶段。",
+							"呈现后停住等回话,不要自己往下开工,也不要把文档正文贴进对话。",
 						].join("\n"),
 					},
 				],
@@ -602,38 +588,39 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		name: "deep_plan_approve",
 		label: "Approve And Execute",
 		description:
-			"用户批准方案后调用:校验方案未被改动,解除写保护,进入执行阶段。必须先经过 deep_plan_review 且用户明确同意。若用户要求修改,先用 deep_plan_revise 回到规划阶段。",
-		promptSnippet: "Lift the write gate after explicit user approval",
+			"用户批准后调用:进入第二阶段,冻结 docs/,放开仓库其余部分。必须先经过 deep_plan_review,且文档已提交。若用户要求修改,先用 deep_plan_revise。",
+		promptSnippet: "Start the execution stage (docs frozen, repo writable)",
 		parameters: Type.Object({
 			approvalNote: Type.Optional(Type.String({ description: "用户批准的原话或要点" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const s = requireActive();
-			if (s.phase !== "review") {
-				throw new Error(`深度规划当前阶段是 ${s.phase},只有 review 阶段可以批准执行。`);
+			if (s.phase !== "writing") {
+				throw new Error(`当前阶段是 ${s.phase},已经在执行阶段。`);
 			}
-			if (s.planPath === undefined) throw new Error("方案文档路径未分配");
+			if (s.planPath === undefined) throw new Error("文档路径未分配");
 			const fs = await import("node:fs/promises");
 			let body = "";
 			try {
 				body = await fs.readFile(s.planPath, "utf8");
 			} catch (error) {
-				throw new Error(`无法读取方案文档,拒绝批准: ${String(error)}`);
+				throw new Error(`无法读取文档,拒绝批准: ${String(error)}`);
 			}
-			if (body.trim() === "") throw new Error("方案文档为空,拒绝批准");
+			if (bodyOf(body) === "") throw new Error("文档正文为空,拒绝批准");
 			s.approvedAt = Date.now();
-			await stampPlanFile(s.planPath, { status: "approved", approved: isoDate() });
+			await stampDoc(s.planPath, { status: "approved", approved: isoDate() });
 			setPhase("executing", ctx);
 			return {
 				content: [
 					{
 						type: "text",
 						text: [
-							"已批准,写保护解除,进入执行阶段。",
-							`方案: ${planLink(ctx.cwd, s.planPath)}`,
+							"已批准,进入第二阶段:执行。",
+							`文档(已冻结): ${planLink(ctx.cwd, s.planPath)}`,
 							params.approvalNote !== undefined ? `批准要点: ${params.approvalNote}` : "",
-							"按方案执行步骤推进,每步对照验收方式确认。",
-							"若新决策改变了已批准范围,调用 deep_plan_revise 重新走审查。",
+							"现在可写仓库其余部分;docs/ 已被冻结,文档改动请走 deep_plan_revise。",
+							"提交只针对仓库代码 —— 文档改动属于第一阶段的那次提交。",
+							"按 deep_plan_task 的任务推进,每步对照验收方式确认,全部完成后 deep_plan_finish。",
 						]
 							.filter((l) => l !== "")
 							.join("\n"),
@@ -644,33 +631,35 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		},
 	});
 
+
 	pi.registerTool({
 		name: "deep_plan_revise",
 		label: "Revise Plan",
 		description:
-			"用户要求修改可变决策、或执行中需要改变已批准范围时调用:重新开启写保护,回到规划阶段。方案文档保留,可按用户要求修订后再次 deep_plan_review。",
-		promptSnippet: "Re-open the write gate to revise the plan",
+			"回到第一阶段(文档)并重新冻结仓库:用户要求改文档、或执行中发现文档需要修正时调用。改完用 deep_plan_review 重新收尾。",
+		promptSnippet: "Re-open the documentation stage (docs writable, repo frozen)",
 		parameters: Type.Object({
-			reason: Type.String({ description: "为什么要回到规划阶段" }),
+			reason: Type.String({ description: "为什么要回到文档阶段" }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const s = requireActive();
-			if (s.phase === "planning") {
+			if (s.phase === "writing") {
 				return {
-					content: [{ type: "text", text: "已在规划阶段,写保护本就生效。" }],
+					content: [{ type: "text", text: "已在文档阶段,docs/ 本就可写。" }],
 					details: undefined,
 				};
 			}
-			setPhase("planning", ctx);
+			await stampDoc(s.planPath ?? "", { status: "writing", updated: isoDate() });
+			setPhase("writing", ctx);
 			return {
 				content: [
 					{
 						type: "text",
 						text: [
-							"已回到规划阶段,写保护重新生效。",
+							"已回到第一阶段:文档。docs/ 可写,仓库其余部分被冻结。",
 							`原因: ${params.reason}`,
-							`方案文档仍为: ${s.planPath !== undefined ? planLink(ctx.cwd, s.planPath) : "(未分配)"}`,
-							"修订后用 deep_plan_review 重新提交审查。",
+							`文档仍为: ${s.planPath !== undefined ? planLink(ctx.cwd, s.planPath) : "(未指定)"}`,
+							"改完用 deep_plan_review 重新收尾,再申请批准执行。",
 						].join("\n"),
 					},
 				],
@@ -679,21 +668,19 @@ export default function deepPlan(pi: ExtensionAPI): void {
 		},
 	});
 
+
 	pi.registerTool({
 		name: "deep_plan_finish",
 		label: "Finish Deep Plan",
 		description:
-			"结束当前 deep-plan(执行完成或用户叫停)。定稿方案状态并清除写保护。默认把方案归档到 docs/plans/archive/<年>/,使 docs/plans/ 顶层只保留活跃方案;keepInPlace=true 留在原地。方案文档不会被删除。",
-		promptSnippet: "End the deep-plan loop, finalize status, and archive the plan",
+			"结束当前 deep-plan(执行完成或用户叫停)。把文档定稿并清除阶段限制。文档留在 docs/ 原地 —— 不归档、不按日期重命名,历史由 git 记录。",
+		promptSnippet: "End the deep-plan loop and finalize the document",
 		parameters: Type.Object({
 			outcome: Type.String({ description: "结果说明(完成了什么 / 为什么停下)" }),
 			status: Type.Optional(
 				Type.Union([Type.Literal("done"), Type.Literal("abandoned")], {
 					description: "done=完成;abandoned=放弃。默认 done。",
 				}),
-			),
-			keepInPlace: Type.Optional(
-				Type.Boolean({ description: "true 则留在 docs/plans/ 顶层不归档。默认 false(归档)。" }),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -705,43 +692,33 @@ export default function deepPlan(pi: ExtensionAPI): void {
 			// resumable instead of stranding an unstamped file.
 			const notes: string[] = [];
 			if (planPath !== undefined) {
-				const stamped = await stampPlanFile(planPath, {
-					status,
-					completed: isoDate(),
+				const stamped = await stampDoc(planPath, {
+					status: status === "done" ? "approved" : "writing",
+					updated: isoDate(),
 					title: state.taskTitle ?? state.goal,
 				});
-				if (stamped === undefined) {
-					notes.push(`方案文档不存在,跳过定稿: ${planPath}`);
-				} else if (params.keepInPlace === true) {
-					notes.push(`方案保留在: ${planPath}`);
-				} else {
-					try {
-						const archived = await archivePlan(planPath);
-						notes.push(
-							archived !== undefined ? `方案已归档到: ${archived}` : `方案文档不存在,未归档: ${planPath}`
-						);
-					} catch (error) {
-						notes.push(`归档失败(方案仍在原地): ${planPath}\n  ${String(error)}`);
-					}
-				}
+				notes.push(
+					stamped === undefined
+						? `文档不存在,跳过定稿: ${planPath}`
+						: `文档定稿在: ${planPath}(原地保留,不归档)`,
+				);
 			}
 
 			state = { ...INACTIVE };
 			persist();
 			sync(ctx);
 
-			const leftover = countTopLevelPlans(ctx.cwd);
 			return {
 				content: [
 					{
 						type: "text",
 						text: [
-							`deep-plan 已结束(${status}),写保护清除。`,
+							`deep-plan 已结束(${status})。`,
 							`结果: ${params.outcome}`,
 							...notes,
-							leftover > 0
-								? `docs/plans/ 顶层仍有 ${leftover} 个文件;跑 /deep-plan-gc 可归档已完成的旧方案。`
-								: "docs/plans/ 顶层已清空。",
+							"",
+							"两段提交应当是分开的:文档改动属于第一阶段,代码改动属于第二阶段。",
+							`当前 docs/ 下 ${countDocs(ctx.cwd)} 份文档。`,
 						]
 							.filter((l) => l !== "")
 							.join("\n"),

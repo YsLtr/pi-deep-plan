@@ -1,20 +1,23 @@
 /**
  * Deep Plan — state, phase model, and path resolution.
  *
- * Phase model:
- *   planning  → hard write gate active (only the plan document is writable)
- *   review    → plan written, awaiting user approval; gate still active
- *   executing → gate lifted, full tool access
+ * Two phases, with different write scopes:
+ *
+ *   writing  → only documents are writable (the whole docs tree); git records history,
+ *              so the extension keeps no dated change log of its own
+ *   executing → documents are frozen, the repository is writable, gate lifted
  *   (inactive → no gate at all; normal Pi behavior)
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export type Phase = "planning" | "review" | "executing";
-
-export const PLANS_SUBDIR = path.join("docs", "plans");
+/** Documents live under `docs/`; the extension owns no other location for them. */
+export const DOCS_DIRNAME = "docs";
 export const SCRATCH_SUBDIR = path.join(".pi", "tmp");
+
+/** Index of topics, so a plan can be routed to an existing document. */
+export const INDEX_BASENAME = "INDEX.md";
 
 export interface Decision {
 	/** Stable id, e.g. "D1". */
@@ -49,10 +52,16 @@ export interface PlanTask {
 	startedAt?: number;
 	completedAt?: number;
 }
+/**
+ * The two stages. `writing` covers documenting the plan and ends with the doc-only commit;
+ * `executing` is the repository work that follows approval.
+ */
+export type Phase = "writing" | "executing";
+
 export interface PlanState {
 	active: boolean;
 	phase: Phase;
-	/** Absolute path of the plan document; the only writable file while gated. */
+	/** Absolute path of the document this run is refining. */
 	planPath?: string;
 	/** Original request text that started the loop. */
 	goal?: string;
@@ -71,7 +80,7 @@ export interface PlanState {
 
 export const INACTIVE: PlanState = {
 	active: false,
-	phase: "planning",
+	phase: "writing",
 	decisions: [],
 	variables: [],
 	tasks: [],
@@ -118,21 +127,72 @@ export function todayStamp(now = new Date()): string {
 }
 
 /**
- * Resolve the plan document path. Prefers `<repo-root>/docs/plans/<date>-<slug>.md`.
- * Never returns a path that already exists — appends -2, -3, ... instead.
+ * The docs directory for this repo.
+ *
+ * Deliberately fixed: documents are long-lived project docs, not per-run artifacts.
+ * There is no date in the name and no archive — git holds the history.
  */
-export function resolvePlanPath(cwd: string, goal: string): string {
-	const dir = path.join(cwd, PLANS_SUBDIR);
-	fs.mkdirSync(dir, { recursive: true });
-	const stem = `${todayStamp()}-${slugify(goal)}`;
-	let candidate = path.join(dir, `${stem}.md`);
-	let n = 2;
-	while (fs.existsSync(candidate)) {
-		candidate = path.join(dir, `${stem}-${n}.md`);
-		n++;
-		if (n > 999) throw new Error("Could not allocate a unique plan path");
+export function docsDir(cwd: string): string {
+	return path.join(cwd, DOCS_DIRNAME);
+}
+
+export function indexFile(cwd: string): string {
+	return path.join(docsDir(cwd), INDEX_BASENAME);
+}
+
+/** A document path is anything under `docs/`, so `..` cannot escape the tree. */
+export function isDocPath(cwd: string, target: string): boolean {
+	const docs = path.resolve(docsDir(cwd));
+	const rel = path.relative(docs, path.resolve(cwd, target));
+	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Resolve which document a run should work on.
+ *
+ * An explicit `requested` path wins (relative paths resolve against cwd) as long as it
+ * stays inside `docs/`. Otherwise the slug of the goal names the file, so re-planning the
+ * same topic lands on the same document instead of creating a sibling.
+ */
+export function resolveDocPath(cwd: string, goal: string, requested?: string): string {
+	fs.mkdirSync(docsDir(cwd), { recursive: true });
+	if (requested !== undefined && requested.trim() !== "") {
+		const wanted = path.resolve(cwd, requested.trim());
+		if (!isDocPath(cwd, wanted)) {
+			throw new Error(`文档必须位于 docs/ 下: ${requested}`);
+		}
+		if (path.extname(wanted) === "") return `${wanted}.md`;
+		return wanted;
 	}
-	return candidate;
+	return path.join(docsDir(cwd), `${slugify(goal)}.md`);
+}
+
+/** Existing topic documents, for routing a plan to the right one. */
+export function listDocs(cwd: string): string[] {
+	const root = docsDir(cwd);
+	const found: string[] = [];
+	const walk = (dir: string): void => {
+		let names: string[];
+		try {
+			names = fs.readdirSync(dir);
+		} catch {
+			return;
+		}
+		for (const name of names) {
+			if (name.startsWith(".")) continue;
+			const full = path.join(dir, name);
+			let stat: fs.Stats;
+			try {
+				stat = fs.statSync(full);
+			} catch {
+				continue;
+			}
+			if (stat.isDirectory()) walk(full);
+			else if (name.endsWith(".md")) found.push(path.relative(cwd, full));
+		}
+	};
+	walk(root);
+	return found.sort();
 }
 
 /**
@@ -150,25 +210,9 @@ export function planLink(cwd: string, target: string): string {
 	return `[${label.replace(/\\/g, "/")}](file://${slash.startsWith("/") ? "" : "/"}${slash})`;
 }
 
-/** Count top-level plan documents (archive excluded) — used to report leftovers. */
-export function countTopLevelPlans(cwd: string): number {
-	const dir = path.join(cwd, PLANS_SUBDIR);
-	let names: string[];
-	try {
-		names = fs.readdirSync(dir);
-	} catch {
-		return 0;
-	}
-	let n = 0;
-	for (const name of names) {
-		if (!name.endsWith(".md")) continue;
-		try {
-			if (fs.statSync(path.join(dir, name)).isFile()) n++;
-		} catch {
-			/* ignore */
-		}
-	}
-	return n;
+/** How many topic documents exist — reported at startup so the index can be kept honest. */
+export function countDocs(cwd: string): number {
+	return listDocs(cwd).length;
 }
 
 export function resolveScratchDir(cwd: string): string {
@@ -178,20 +222,23 @@ export function resolveScratchDir(cwd: string): string {
 }
 
 /**
- * Is `target` allowed to be written while the gate is active?
- * Allowed: the plan document itself, and files under the scratch directory.
+ * Is `target` allowed to be written in the current phase?
+ *
+ * Stage one (writing) is scoped to documents: anything under `docs/`, so the whole doc set
+ * can be refined, plus the scratch directory for subagent reports. Stage two (executing) is
+ * scoped to the repository and freezes `docs/` — that is what keeps the two commits clean,
+ * and it is the same rule whether the phase gate is armed or not.
  */
 export function isWriteAllowed(state: PlanState, target: string, cwd: string): boolean {
 	if (!state.active) return true;
-	if (state.phase === "executing") return true;
 	const resolved = path.resolve(cwd, target);
-	if (state.planPath !== undefined && path.resolve(state.planPath) === resolved) return true;
 	if (state.scratchAllow) {
 		const scratch = path.resolve(cwd, SCRATCH_SUBDIR);
 		const rel = path.relative(scratch, resolved);
 		if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) return true;
 	}
-	return false;
+	if (state.phase === "executing") return !isDocPath(cwd, resolved);
+	return isDocPath(cwd, resolved);
 }
 
 /**
@@ -288,8 +335,9 @@ export function fromPersisted(data: unknown): PlanState | undefined {
 	if (typeof data !== "object" || data === null) return undefined;
 	const d = data as Partial<PlanState>;
 	if (typeof d.active !== "boolean") return undefined;
-	const phase: Phase =
-		d.phase === "review" || d.phase === "executing" || d.phase === "planning" ? d.phase : "planning";
+	// Old sessions used planning/review/executing. Both document stages collapse into
+	// `writing`; a half-documented plan resumes as documentation work, which is safe.
+	const phase: Phase = d.phase === "executing" ? "executing" : "writing";
 	return {
 		active: d.active,
 		phase,

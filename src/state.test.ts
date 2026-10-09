@@ -78,20 +78,30 @@ test("extractWriteTarget reports unidentifiable and foreign calls distinctly", (
 	assert.equal(extractWriteTarget("anchor_grep", { pattern: "x" }), undefined);
 });
 
-test("isWriteAllowed admits only the plan document and scratch", () => {
+// Stage one is scoped to documents, stage two to everything but documents. That split is
+// what keeps the doc-only commit and the repo commit from overlapping.
+test("isWriteAllowed scopes each stage to its own side of docs/", () => {
 	const cwd = path.resolve("/repo");
-	const state: PlanState = {
-		...INACTIVE,
-		active: true,
-		phase: "planning",
-		planPath: path.join(cwd, "docs/plans/p.md"),
-	};
-	assert.ok(isWriteAllowed(state, path.join(cwd, "docs/plans/p.md"), cwd));
+	const state: PlanState = { ...INACTIVE, active: true, phase: "writing" };
+	const docs = path.join(cwd, "docs");
+	const src = path.join(cwd, "src/index.ts");
+
+	// Stage one: the whole docs tree, nested included, plus scratch.
+	assert.ok(isWriteAllowed(state, path.join(docs, "README.md"), cwd));
+	assert.ok(isWriteAllowed(state, path.join(docs, "plans/p.md"), cwd));
 	assert.ok(isWriteAllowed(state, path.join(cwd, ".pi/tmp/report.md"), cwd));
-	assert.ok(!isWriteAllowed(state, path.join(cwd, "src/index.ts"), cwd));
-	assert.ok(!isWriteAllowed(state, path.join(cwd, "docs/plans/other.md"), cwd));
-	// Executing lifts the gate entirely.
-	assert.ok(isWriteAllowed({ ...state, phase: "executing" }, path.join(cwd, "src/index.ts"), cwd));
+	assert.ok(!isWriteAllowed(state, src, cwd));
+	assert.ok(!isWriteAllowed(state, path.join(cwd, "README.md"), cwd));
+	assert.ok(!isWriteAllowed(state, path.join(cwd, "AGENTS.md"), cwd));
+	// A sibling directory whose name merely starts with "docs" is not the docs tree.
+	assert.ok(!isWriteAllowed(state, path.join(cwd, "docsite/x.md"), cwd));
+
+	// Stage two: the repo, with docs frozen so the second commit stays code-only.
+	const exec: PlanState = { ...state, phase: "executing" };
+	assert.ok(isWriteAllowed(exec, src, cwd));
+	assert.ok(isWriteAllowed(exec, path.join(cwd, "AGENTS.md"), cwd));
+	assert.ok(!isWriteAllowed(exec, path.join(docs, "plans/p.md"), cwd));
+	assert.ok(isWriteAllowed(exec, path.join(cwd, ".pi/tmp/report.md"), cwd));
 });
 
 // The gate learns anchor->file from read output. If the row format drifts, every

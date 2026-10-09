@@ -170,8 +170,9 @@ function checkArgv(argv: string[], depth: number): string | null {
 	}
 	if (bin === "command") return checkCommandBuiltin(args, depth);
 	if (bin === "pi") {
-		// Spawning another agent could write; only its info flags are allowed.
-		return args.every((a) => /^(-h|--help|-V|--version)$/.test(a))
+		// Spawning another agent could write; only its info flags are allowed. A bare `pi`
+		// opens an interactive agent, so an empty arg list must not satisfy `every`.
+		return args.length > 0 && args.every((a) => /^(-h|--help|-V|--version)$/.test(a))
 			? null
 			: "pi 会启动可写入的 agent,仅允许 --help/--version";
 	}
@@ -259,6 +260,8 @@ function checkArgs(bin: string, args: string[]): string | null {
 		case "python":
 		case "python3":
 		case "py":
+			// A bare interpreter is an interactive REPL; `-e`/`-c` run arbitrary code.
+			if (args.length === 0) return `${bin} 不带参数会进入交互式解释器`;
 			return args.some((a) => a === "-e" || a === "--eval" || a === "-c" || a === "-")
 				? `${bin} 的内联执行参数会运行任意代码`
 				: null;

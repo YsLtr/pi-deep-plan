@@ -15,6 +15,19 @@ const ALLOWED = [
 	"du -sh dist 2>&1 >/dev/null",
 	`FOO=1 grep -rn "selectors" tests scripts package.json 2>/dev/null | head -10`,
 	"cat x 2>&-",
+	// Read forms of the two-tier families, and info-only flags of interpreters/agents.
+	"git config -l",
+	"git remote -v",
+	"git stash list",
+	"git tag -l",
+	"git reflog",
+	"git branch",
+	"git worktree list",
+	"npm ls",
+	"npm config get x",
+	"pi --help",
+	"pi --version",
+	"node --version",
 ];
 
 const DENIED = [
@@ -24,6 +37,25 @@ const DENIED = [
 	"du -sh x >& /tmp/f",
 	"echo hi 2>&1 > out.txt",
 	"rm -rf src",
+	// Bare interactive shells, and the write forms of the two-tier families.
+	"pi",
+	"env pi",
+	"command pi",
+	"pi run x",
+	"node",
+	"python",
+	"python3",
+	"py",
+	"node -e 'x'",
+	"python -c 'x'",
+	"git config user.name x",
+	"git remote add a b",
+	"git stash push",
+	"git tag -d v1",
+	"git reflog delete",
+	"git branch -D x",
+	"npm config set x y",
+	"npm install",
 ];
 
 test("readers pass the planning gate", () => {

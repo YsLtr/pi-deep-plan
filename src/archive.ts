@@ -17,9 +17,6 @@ export type DocStatus = "writing" | "approved";
 export interface DocFrontmatter {
 	title?: string;
 	status?: DocStatus;
-	/** Topics this document covers, so a later run can route to it. */
-	topics?: string;
-	created?: string;
 	updated?: string;
 	approved?: string;
 }
@@ -50,8 +47,6 @@ export function parseFrontmatter(body: string): { fm: Record<string, string>; re
 const FIELD_ORDER: (keyof DocFrontmatter)[] = [
 	"title",
 	"status",
-	"topics",
-	"created",
 	"updated",
 	"approved",
 ];

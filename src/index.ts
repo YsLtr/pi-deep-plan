@@ -119,6 +119,7 @@ export default function deepPlan(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		state = { ...INACTIVE };
+		anchorPaths.clear();
 	});
 
 
